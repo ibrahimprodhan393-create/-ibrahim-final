@@ -24,6 +24,25 @@ CREATE INDEX IF NOT EXISTS bot_files_search_idx
     to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(file_name, '') || ' ' || coalesce(mime_type, ''))
   );
 
+CREATE TABLE IF NOT EXISTS bot_links (
+  id BIGSERIAL PRIMARY KEY,
+  title TEXT NOT NULL,
+  url TEXT NOT NULL,
+  uploader_id BIGINT NOT NULL,
+  uploader_name TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS bot_links_active_created_idx
+  ON bot_links (is_active, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS bot_links_search_idx
+  ON bot_links USING GIN (
+    to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(url, ''))
+  );
+
 CREATE TABLE IF NOT EXISTS bot_users (
   telegram_id BIGINT PRIMARY KEY,
   username TEXT,
@@ -49,6 +68,8 @@ CREATE TABLE IF NOT EXISTS bot_user_passwords (
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_by BIGINT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  deactivated_by BIGINT,
+  deactivated_at TIMESTAMPTZ,
   last_used_at TIMESTAMPTZ,
   use_count BIGINT NOT NULL DEFAULT 0
 );

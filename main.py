@@ -143,8 +143,16 @@ async def handle_message(message: dict[str, Any]) -> None:
         await handle_support_contact_update(chat_id, user, text)
         return
 
+    if state == "download_link":
+        await handle_download_link_add(chat_id, user, text)
+        return
+
     if state == "new_user_password":
         await handle_new_user_password(chat_id, user, text)
+        return
+
+    if state == "remove_user_password":
+        await handle_remove_user_password(chat_id, user, text)
         return
 
     if state == "login_password":
@@ -212,10 +220,11 @@ async def handle_media_upload(message: dict[str, Any], media: dict[str, Any]) ->
     user_states.pop(user.get("id"), None)
 
     if not is_admin(user.get("id")):
+        authorized = await is_user_authorized(user.get("id"))
         await send_message(
             chat_id,
             "Only admins can upload files. You can download files from the buttons.",
-            reply_markup=main_menu_keyboard(False, False),
+            reply_markup=main_menu_keyboard(False, authorized),
         )
         return
 
@@ -237,7 +246,7 @@ async def handle_media_upload(message: dict[str, Any], media: dict[str, Any]) ->
         chat_id,
         "\n".join(
             [
-                "File saved successfully.",
+                "Direct download file saved successfully.",
                 "",
                 f"<b>{e(saved['title'] or saved['file_name'])}</b>",
                 f"Size: {e(format_bytes(saved['file_size']))}",
@@ -260,7 +269,7 @@ async def handle_callback(query: dict[str, Any]) -> None:
         await answer_callback(query["id"])
         return
 
-    if action not in {"search", "upload", "setsupport", "createpass", "login"}:
+    if action not in {"search", "upload", "addlink", "setsupport", "createpass", "removepass", "login"}:
         user_states.pop(user.get("id"), None)
 
     if action == "menu":
@@ -275,6 +284,18 @@ async def handle_callback(query: dict[str, Any]) -> None:
             return
         await answer_callback(query["id"])
         await show_file_list(chat_id, message_id, safe_int(raw_value), user)
+    elif action == "links":
+        if not await user_has_access(user.get("id")):
+            await deny_locked_callback(query["id"], chat_id, message_id)
+            return
+        await answer_callback(query["id"])
+        await show_link_list(chat_id, message_id, safe_int(raw_value), user)
+    elif action == "link":
+        if not await user_has_access(user.get("id")):
+            await deny_locked_callback(query["id"], chat_id, message_id)
+            return
+        await answer_callback(query["id"])
+        await show_link_detail(chat_id, message_id, safe_int(raw_value), user)
     elif action == "file":
         if not await user_has_access(user.get("id")):
             await deny_locked_callback(query["id"], chat_id, message_id)
@@ -293,7 +314,7 @@ async def handle_callback(query: dict[str, Any]) -> None:
             return
         user_states[user["id"]] = "search"
         await answer_callback(query["id"])
-        await edit_message(chat_id, message_id, "Send the file name or keyword you want to search for.", cancel_keyboard())
+        await edit_message(chat_id, message_id, "Send a file name, link title, or keyword you want to search for.", cancel_keyboard())
     elif action == "login":
         if is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins do not need to login.")
@@ -319,6 +340,18 @@ async def handle_callback(query: dict[str, Any]) -> None:
         user_states[user["id"]] = "upload"
         await answer_callback(query["id"])
         await edit_message(chat_id, message_id, upload_instructions(), back_keyboard("admin"))
+    elif action == "addlink":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        user_states[user["id"]] = "download_link"
+        await answer_callback(query["id"])
+        await edit_message(
+            chat_id,
+            message_id,
+            "Send the browser download link.\n\nFormats:\nTitle | https://example.com/file.zip\nhttps://example.com/file.zip",
+            back_keyboard("admin"),
+        )
     elif action == "setsupport":
         if not is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins only.", True)
@@ -343,6 +376,18 @@ async def handle_callback(query: dict[str, Any]) -> None:
             f"Send the new user login password.\n\nMinimum length: {USER_PASSWORD_MIN_LENGTH} characters.\nThe bot stores only a secure hash, not the plain password.",
             back_keyboard("admin"),
         )
+    elif action == "removepass":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        user_states[user["id"]] = "remove_user_password"
+        await answer_callback(query["id"])
+        await edit_message(
+            chat_id,
+            message_id,
+            "Send the user password you want to remove.\n\nMatching active passwords will be disabled, and users logged in with that password will be logged out.",
+            back_keyboard("admin"),
+        )
     elif action == "del":
         if not is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins only.", True)
@@ -356,6 +401,19 @@ async def handle_callback(query: dict[str, Any]) -> None:
         await mark_file_inactive(safe_int(raw_value))
         await answer_callback(query["id"], "File removed.")
         await show_file_list(chat_id, message_id, 0, user)
+    elif action == "dellink":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        await answer_callback(query["id"])
+        await edit_message(chat_id, message_id, "Do you want to remove this browser download link?", delete_link_confirm_keyboard(safe_int(raw_value)))
+    elif action == "dellinkok":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        await mark_link_inactive(safe_int(raw_value))
+        await answer_callback(query["id"], "Link removed.")
+        await show_link_list(chat_id, message_id, 0, user)
     else:
         await answer_callback(query["id"])
 
@@ -375,8 +433,8 @@ async def show_main_menu(chat_id: int, message_id: int, user: dict[str, Any]) ->
 def main_menu_text(user: dict[str, Any], authorized: bool = True) -> str:
     name = f", {e(user.get('first_name'))}" if user.get("first_name") else ""
     if not authorized:
-        return f"Welcome{name}.\n\nPlease login with your user password to access files."
-    return f"Welcome{name}.\n\nBrowse files, search by keyword, then press Download."
+        return f"Welcome{name}.\n\nPlease login with your user password to access downloads."
+    return f"Welcome{name}.\n\nChoose Direct Download for Telegram files or Browser Download for external links."
 
 
 def login_prompt_text() -> str:
@@ -431,6 +489,31 @@ async def handle_new_user_password(chat_id: int, user: dict[str, Any], password:
     await send_message(
         chat_id,
         "User password created successfully.\n\nShare this password with users privately. The plain password is not stored in Neon.",
+        reply_markup=admin_panel_keyboard(),
+    )
+
+
+async def handle_remove_user_password(chat_id: int, user: dict[str, Any], password: str) -> None:
+    if not is_admin(user.get("id")):
+        user_states.pop(user.get("id"), None)
+        await send_message(chat_id, "Admins only.", reply_markup=main_menu_keyboard(False, False))
+        return
+
+    password = password.strip()
+    if not password:
+        await send_message(chat_id, "Send the password you want to remove.", reply_markup=back_keyboard("admin"))
+        return
+
+    password_ids = await find_matching_active_password_ids(password)
+    if not password_ids:
+        await send_message(chat_id, "No active password matched that value.", reply_markup=admin_panel_keyboard())
+        return
+
+    user_states.pop(user.get("id"), None)
+    disabled_count, revoked_count = await deactivate_user_passwords(password_ids, user.get("id"))
+    await send_message(
+        chat_id,
+        f"Password removed successfully.\n\nDisabled passwords: {disabled_count}\nLogged-out users: {revoked_count}",
         reply_markup=admin_panel_keyboard(),
     )
 
@@ -491,15 +574,47 @@ def support_text(contact: str | None, admin: bool) -> str:
 
 
 def admin_panel_text() -> str:
-    return "Admin Panel\n\nPress Upload File to add a new file.\nPress Create User Password to add a login password.\nPress File List to view saved files.\nPress Set Support ID to update the support contact."
+    return "🛠 Admin Panel\n\n📤 Upload Direct File adds Telegram files.\n🌐 Add Browser Link adds external download links.\n🔑 Create User Password adds a login password.\n🗑 Remove User Password disables a login password.\n📥 Direct Files shows Telegram files.\n🌐 Browser Links shows external links.\n🛠 Set Support ID updates the support contact."
 
 
 def upload_instructions() -> str:
     return (
-        "<b>Upload File</b>\n\n"
+        "<b>📤 Upload Direct File</b>\n\n"
         "Send a document, video, audio, or photo in this chat.\n"
         "If you add a caption, it will be saved as the file title.\n\n"
         "The bot will not download the file to Render. It only stores the Telegram file_id in Neon."
+    )
+
+
+async def handle_download_link_add(chat_id: int, user: dict[str, Any], text: str) -> None:
+    if not is_admin(user.get("id")):
+        user_states.pop(user.get("id"), None)
+        await send_message(chat_id, "Admins only.", reply_markup=main_menu_keyboard(False, False))
+        return
+
+    parsed = parse_download_link_input(text)
+    if not parsed:
+        await send_message(
+            chat_id,
+            "Please send a valid HTTP/HTTPS link.\n\nFormats:\nTitle | https://example.com/file.zip\nhttps://example.com/file.zip",
+            reply_markup=back_keyboard("admin"),
+        )
+        return
+
+    title, url = parsed
+    user_states.pop(user.get("id"), None)
+    saved = await save_download_link(
+        {
+            "title": title,
+            "url": url,
+            "uploader_id": user["id"],
+            "uploader_name": display_name(user),
+        }
+    )
+    await send_message(
+        chat_id,
+        f"Browser download link saved.\n\n<b>{e(saved['title'])}</b>\n<code>{e(saved['url'])}</code>",
+        reply_markup=link_saved_keyboard(saved["id"]),
     )
 
 
@@ -513,10 +628,10 @@ async def show_file_list(chat_id: int, message_id: int, page: int, user: dict[st
         return
 
     if not files:
-        await edit_message(chat_id, message_id, "No files have been uploaded yet.", back_keyboard())
+        await edit_message(chat_id, message_id, "No direct download files have been uploaded yet.", back_keyboard())
         return
 
-    lines = [f"<b>File List</b>", f"Page {page + 1}/{total_pages}", ""]
+    lines = [f"<b>📥 Direct Download Files</b>", f"Page {page + 1}/{total_pages}", ""]
     for index, file in enumerate(files, start=page * PAGE_SIZE + 1):
         lines.append(f"{index}. {e(file['title'] or file['file_name'])} ({e(format_bytes(file['file_size']))})")
     await edit_message(chat_id, message_id, "\n".join(lines), file_list_keyboard(files, page, total_pages))
@@ -529,7 +644,7 @@ async def show_file_detail(chat_id: int, message_id: int, file_id: int, user: di
         return
 
     lines = [
-        f"<b>{e(file['title'] or file['file_name'])}</b>",
+        f"<b>📥 {e(file['title'] or file['file_name'])}</b>",
         "",
         f"File name: {e(file['file_name'])}",
         f"Size: {e(format_bytes(file['file_size']))}",
@@ -540,6 +655,40 @@ async def show_file_detail(chat_id: int, message_id: int, file_id: int, user: di
     await edit_message(chat_id, message_id, "\n".join(lines), file_detail_keyboard(file["id"], is_admin(user.get("id"))))
 
 
+async def show_link_list(chat_id: int, message_id: int, page: int, user: dict[str, Any]) -> None:
+    page = max(0, page)
+    links, total = await list_links(page, PAGE_SIZE)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+
+    if page >= total_pages:
+        await show_link_list(chat_id, message_id, total_pages - 1, user)
+        return
+
+    if not links:
+        await edit_message(chat_id, message_id, "No browser download links have been added yet.", back_keyboard())
+        return
+
+    lines = [f"<b>🌐 Browser Download Links</b>", f"Page {page + 1}/{total_pages}", ""]
+    for index, link in enumerate(links, start=page * PAGE_SIZE + 1):
+        lines.append(f"{index}. {e(link['title'])}")
+    await edit_message(chat_id, message_id, "\n".join(lines), link_list_keyboard(links, page, total_pages))
+
+
+async def show_link_detail(chat_id: int, message_id: int, link_id: int, user: dict[str, Any]) -> None:
+    link = await get_link(link_id)
+    if not link:
+        await edit_message(chat_id, message_id, "Browser download link not found.", back_keyboard())
+        return
+
+    lines = [
+        f"<b>🌐 {e(link['title'])}</b>",
+        "",
+        f"Link: <code>{e(link['url'])}</code>",
+        f"Added: {e(format_date(link['created_at']))}",
+    ]
+    await edit_message(chat_id, message_id, "\n".join(lines), link_detail_keyboard(link, is_admin(user.get("id"))))
+
+
 async def send_search_results(chat_id: int, keyword: str) -> None:
     keyword = keyword.strip()
     if not keyword:
@@ -547,11 +696,12 @@ async def send_search_results(chat_id: int, keyword: str) -> None:
         return
 
     files = await search_files(keyword, 8)
-    if not files:
-        await send_message(chat_id, f"No files found for \"{e(keyword)}\".", reply_markup=main_menu_keyboard(False, True))
+    links = await search_links(keyword, 8)
+    if not files and not links:
+        await send_message(chat_id, f"No direct files or browser links found for \"{e(keyword)}\".", reply_markup=main_menu_keyboard(False, True))
         return
 
-    await send_message(chat_id, f"<b>Search Results</b>\n{e(keyword)}", reply_markup=search_results_keyboard(files))
+    await send_message(chat_id, f"<b>🔎 Search Results</b>\n{e(keyword)}", reply_markup=search_results_keyboard(files, links))
 
 
 async def send_stored_file(chat_id: int, file_id: int) -> None:
@@ -564,7 +714,7 @@ async def send_stored_file(chat_id: int, file_id: int) -> None:
         "chat_id": chat_id,
         "caption": f"{file['title'] or file['file_name']}\nSize: {format_bytes(file['file_size'])}",
         "protect_content": PROTECT_CONTENT,
-        "reply_markup": {"inline_keyboard": [[{"text": "Main Menu", "callback_data": "menu"}]]},
+        "reply_markup": {"inline_keyboard": [[{"text": "🏠 Main Menu", "callback_data": "menu"}]]},
     }
     method, field = {
         "video": ("sendVideo", "video"),
@@ -578,62 +728,98 @@ async def send_stored_file(chat_id: int, file_id: int) -> None:
 def main_menu_keyboard(admin: bool, authorized: bool) -> dict[str, Any]:
     if admin or authorized:
         keyboard = [
-            [{"text": "Browse Files", "callback_data": "list:0"}, {"text": "Search", "callback_data": "search"}],
+            [{"text": "📥 Direct Download", "callback_data": "list:0"}],
+            [{"text": "🌐 Browser Download", "callback_data": "links:0"}],
+            [{"text": "🔎 Search", "callback_data": "search"}],
         ]
     else:
-        keyboard = [[{"text": "Login", "callback_data": "login"}]]
+        keyboard = [[{"text": "🔐 Login", "callback_data": "login"}]]
 
     if admin:
-        keyboard.append([{"text": "Admin Panel", "callback_data": "admin"}])
+        keyboard.append([{"text": "🛠 Admin Panel", "callback_data": "admin"}])
     elif authorized:
-        keyboard.append([{"text": "Logout", "callback_data": "logout"}])
+        keyboard.append([{"text": "🚪 Logout", "callback_data": "logout"}])
 
-    keyboard.append([{"text": "Support", "callback_data": "support"}])
+    keyboard.append([{"text": "💬 Support", "callback_data": "support"}])
     return {"inline_keyboard": keyboard}
 
 
 def admin_panel_keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
-            [{"text": "Upload File", "callback_data": "upload"}],
-            [{"text": "Create User Password", "callback_data": "createpass"}],
-            [{"text": "Set Support ID", "callback_data": "setsupport"}],
-            [{"text": "File List", "callback_data": "list:0"}],
-            [{"text": "Main Menu", "callback_data": "menu"}],
+            [{"text": "📤 Upload Direct File", "callback_data": "upload"}],
+            [{"text": "🌐 Add Browser Link", "callback_data": "addlink"}],
+            [{"text": "🔑 Create User Password", "callback_data": "createpass"}],
+            [{"text": "🗑 Remove User Password", "callback_data": "removepass"}],
+            [{"text": "🛠 Set Support ID", "callback_data": "setsupport"}],
+            [{"text": "📥 Direct Files", "callback_data": "list:0"}],
+            [{"text": "🌐 Browser Links", "callback_data": "links:0"}],
+            [{"text": "🏠 Main Menu", "callback_data": "menu"}],
         ]
     }
 
 
 def file_saved_keyboard(file_id: int) -> dict[str, Any]:
-    return {"inline_keyboard": [[{"text": "View File", "callback_data": f"file:{file_id}"}], [{"text": "Admin Panel", "callback_data": "admin"}]]}
+    return {"inline_keyboard": [[{"text": "📥 View Direct File", "callback_data": f"file:{file_id}"}], [{"text": "🛠 Admin Panel", "callback_data": "admin"}]]}
+
+
+def link_saved_keyboard(link_id: int) -> dict[str, Any]:
+    return {"inline_keyboard": [[{"text": "🌐 View Browser Link", "callback_data": f"link:{link_id}"}], [{"text": "🛠 Admin Panel", "callback_data": "admin"}]]}
 
 
 def file_list_keyboard(files: list[asyncpg.Record], page: int, total_pages: int) -> dict[str, Any]:
-    rows = [[{"text": trim_button(file["title"] or file["file_name"]), "callback_data": f"file:{file['id']}"}] for file in files]
+    rows = [[{"text": f"📄 {trim_button(file['title'] or file['file_name'])}", "callback_data": f"file:{file['id']}"}] for file in files]
     nav = []
     if page > 0:
-        nav.append({"text": "Previous", "callback_data": f"list:{page - 1}"})
+        nav.append({"text": "⬅️ Previous", "callback_data": f"list:{page - 1}"})
     if page + 1 < total_pages:
-        nav.append({"text": "Next", "callback_data": f"list:{page + 1}"})
+        nav.append({"text": "Next ➡️", "callback_data": f"list:{page + 1}"})
     if nav:
         rows.append(nav)
-    rows.append([{"text": "Search", "callback_data": "search"}, {"text": "Main Menu", "callback_data": "menu"}])
+    rows.append([{"text": "🌐 Browser Download", "callback_data": "links:0"}])
+    rows.append([{"text": "🔎 Search", "callback_data": "search"}, {"text": "🏠 Main Menu", "callback_data": "menu"}])
     return {"inline_keyboard": rows}
 
 
 def file_detail_keyboard(file_id: int, admin: bool) -> dict[str, Any]:
     rows = [
-        [{"text": "Download", "callback_data": f"get:{file_id}"}],
-        [{"text": "File List", "callback_data": "list:0"}, {"text": "Main Menu", "callback_data": "menu"}],
+        [{"text": "📥 Direct Download", "callback_data": f"get:{file_id}"}],
+        [{"text": "📥 Direct Files", "callback_data": "list:0"}, {"text": "🏠 Main Menu", "callback_data": "menu"}],
     ]
     if admin:
-        rows.insert(1, [{"text": "Remove From List", "callback_data": f"del:{file_id}"}])
+        rows.insert(1, [{"text": "🗑 Remove Direct File", "callback_data": f"del:{file_id}"}])
     return {"inline_keyboard": rows}
 
 
-def search_results_keyboard(files: list[asyncpg.Record]) -> dict[str, Any]:
-    rows = [[{"text": trim_button(file["title"] or file["file_name"]), "callback_data": f"file:{file['id']}"}] for file in files]
-    rows.append([{"text": "Search Again", "callback_data": "search"}, {"text": "Main Menu", "callback_data": "menu"}])
+def link_list_keyboard(links: list[asyncpg.Record], page: int, total_pages: int) -> dict[str, Any]:
+    rows = [[{"text": f"🌐 {trim_button(link['title'])}", "callback_data": f"link:{link['id']}"}] for link in links]
+    nav = []
+    if page > 0:
+        nav.append({"text": "⬅️ Previous", "callback_data": f"links:{page - 1}"})
+    if page + 1 < total_pages:
+        nav.append({"text": "Next ➡️", "callback_data": f"links:{page + 1}"})
+    if nav:
+        rows.append(nav)
+    rows.append([{"text": "📥 Direct Download", "callback_data": "list:0"}])
+    rows.append([{"text": "🔎 Search", "callback_data": "search"}, {"text": "🏠 Main Menu", "callback_data": "menu"}])
+    return {"inline_keyboard": rows}
+
+
+def link_detail_keyboard(link: asyncpg.Record, admin: bool) -> dict[str, Any]:
+    rows = [
+        [{"text": "🌐 Browser Download", "url": link["url"]}],
+        [{"text": "🌐 Browser Links", "callback_data": "links:0"}, {"text": "🏠 Main Menu", "callback_data": "menu"}],
+    ]
+    if admin:
+        rows.insert(1, [{"text": "🗑 Remove Browser Link", "callback_data": f"dellink:{link['id']}"}])
+    return {"inline_keyboard": rows}
+
+
+def search_results_keyboard(files: list[asyncpg.Record], links: list[asyncpg.Record]) -> dict[str, Any]:
+    rows = []
+    rows.extend([[{"text": f"📥 {trim_button(file['title'] or file['file_name'])}", "callback_data": f"file:{file['id']}"}] for file in files])
+    rows.extend([[{"text": f"🌐 {trim_button(link['title'])}", "callback_data": f"link:{link['id']}"}] for link in links])
+    rows.append([{"text": "🔎 Search Again", "callback_data": "search"}, {"text": "🏠 Main Menu", "callback_data": "menu"}])
     return {"inline_keyboard": rows}
 
 
@@ -641,31 +827,35 @@ def support_keyboard(contact: str | None) -> dict[str, Any]:
     rows = []
     url = support_contact_url(contact)
     if url:
-        rows.append([{"text": "Contact Admin", "url": url}])
-    rows.append([{"text": "Main Menu", "callback_data": "menu"}])
+        rows.append([{"text": "💬 Contact Admin", "url": url}])
+    rows.append([{"text": "🏠 Main Menu", "callback_data": "menu"}])
     return {"inline_keyboard": rows}
 
 
 def login_keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
-            [{"text": "Login", "callback_data": "login"}],
-            [{"text": "Support", "callback_data": "support"}],
+            [{"text": "🔐 Login", "callback_data": "login"}],
+            [{"text": "💬 Support", "callback_data": "support"}],
         ]
     }
 
 
 def delete_confirm_keyboard(file_id: int) -> dict[str, Any]:
-    return {"inline_keyboard": [[{"text": "Yes, Delete", "callback_data": f"delok:{file_id}"}], [{"text": "Cancel", "callback_data": f"file:{file_id}"}]]}
+    return {"inline_keyboard": [[{"text": "✅ Yes, Remove", "callback_data": f"delok:{file_id}"}], [{"text": "↩️ Cancel", "callback_data": f"file:{file_id}"}]]}
+
+
+def delete_link_confirm_keyboard(link_id: int) -> dict[str, Any]:
+    return {"inline_keyboard": [[{"text": "✅ Yes, Remove", "callback_data": f"dellinkok:{link_id}"}], [{"text": "↩️ Cancel", "callback_data": f"link:{link_id}"}]]}
 
 
 def back_keyboard(target: str = "menu") -> dict[str, Any]:
-    text = "Admin Panel" if target == "admin" else "Main Menu"
+    text = "🛠 Admin Panel" if target == "admin" else "🏠 Main Menu"
     return {"inline_keyboard": [[{"text": text, "callback_data": target}]]}
 
 
 def cancel_keyboard() -> dict[str, Any]:
-    return {"inline_keyboard": [[{"text": "Cancel", "callback_data": "menu"}]]}
+    return {"inline_keyboard": [[{"text": "↩️ Cancel", "callback_data": "menu"}]]}
 
 
 async def migrate() -> None:
@@ -699,6 +889,25 @@ async def migrate() -> None:
                 to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(file_name, '') || ' ' || coalesce(mime_type, ''))
               );
 
+            CREATE TABLE IF NOT EXISTS bot_links (
+              id BIGSERIAL PRIMARY KEY,
+              title TEXT NOT NULL,
+              url TEXT NOT NULL,
+              uploader_id BIGINT NOT NULL,
+              uploader_name TEXT,
+              is_active BOOLEAN NOT NULL DEFAULT TRUE,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS bot_links_active_created_idx
+              ON bot_links (is_active, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS bot_links_search_idx
+              ON bot_links USING GIN (
+                to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(url, ''))
+              );
+
             CREATE TABLE IF NOT EXISTS bot_users (
               telegram_id BIGINT PRIMARY KEY,
               username TEXT,
@@ -730,9 +939,17 @@ async def migrate() -> None:
               is_active BOOLEAN NOT NULL DEFAULT TRUE,
               created_by BIGINT,
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              deactivated_by BIGINT,
+              deactivated_at TIMESTAMPTZ,
               last_used_at TIMESTAMPTZ,
               use_count BIGINT NOT NULL DEFAULT 0
             );
+
+            ALTER TABLE bot_user_passwords
+              ADD COLUMN IF NOT EXISTS deactivated_by BIGINT;
+
+            ALTER TABLE bot_user_passwords
+              ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
 
             CREATE INDEX IF NOT EXISTS bot_user_passwords_active_idx
               ON bot_user_passwords (is_active, created_at DESC);
@@ -814,6 +1031,11 @@ async def create_user_password(password: str, admin_id: Any) -> None:
 
 
 async def verify_user_password(password: str) -> int | None:
+    password_ids = await find_matching_active_password_ids(password)
+    return password_ids[0] if password_ids else None
+
+
+async def find_matching_active_password_ids(password: str) -> list[int]:
     assert db_pool
     async with db_pool.acquire() as conn:
         rows = await conn.fetch(
@@ -825,11 +1047,48 @@ async def verify_user_password(password: str) -> int | None:
             """
         )
 
-    for row in rows:
-        if verify_password(password, row["salt"], row["password_hash"]):
-            return int(row["id"])
+    return [int(row["id"]) for row in rows if verify_password(password, row["salt"], row["password_hash"])]
 
-    return None
+
+async def deactivate_user_passwords(password_ids: list[int], admin_id: Any) -> tuple[int, int]:
+    if not password_ids:
+        return 0, 0
+
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        disabled_count = await conn.fetchval(
+            """
+            WITH updated AS (
+              UPDATE bot_user_passwords
+              SET is_active = FALSE,
+                  deactivated_by = $2,
+                  deactivated_at = NOW()
+              WHERE id = ANY($1::bigint[])
+                AND is_active = TRUE
+              RETURNING 1
+            )
+            SELECT COUNT(*) FROM updated
+            """,
+            password_ids,
+            safe_int(admin_id),
+        )
+        revoked_count = await conn.fetchval(
+            """
+            WITH updated AS (
+              UPDATE bot_users
+              SET is_authorized = FALSE,
+                  authorized_at = NULL,
+                  authorized_by_password_id = NULL
+              WHERE authorized_by_password_id = ANY($1::bigint[])
+                AND is_authorized = TRUE
+              RETURNING 1
+            )
+            SELECT COUNT(*) FROM updated
+            """,
+            password_ids,
+        )
+
+    return int(disabled_count or 0), int(revoked_count or 0)
 
 
 async def mark_password_used(password_id: int) -> None:
@@ -880,6 +1139,22 @@ async def save_file(file: dict[str, Any]) -> asyncpg.Record:
         )
 
 
+async def save_download_link(link: dict[str, Any]) -> asyncpg.Record:
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            INSERT INTO bot_links (title, url, uploader_id, uploader_name)
+            VALUES ($1, $2, $3, $4)
+            RETURNING *
+            """,
+            link["title"],
+            link["url"],
+            link["uploader_id"],
+            link["uploader_name"],
+        )
+
+
 async def list_files(page: int, page_size: int) -> tuple[list[asyncpg.Record], int]:
     assert db_pool
     async with db_pool.acquire() as conn:
@@ -896,6 +1171,24 @@ async def list_files(page: int, page_size: int) -> tuple[list[asyncpg.Record], i
         )
         total = await conn.fetchval("SELECT COUNT(*) FROM bot_files WHERE is_active = TRUE")
     return list(files), int(total or 0)
+
+
+async def list_links(page: int, page_size: int) -> tuple[list[asyncpg.Record], int]:
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        links = await conn.fetch(
+            """
+            SELECT *
+            FROM bot_links
+            WHERE is_active = TRUE
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+            """,
+            page_size,
+            page * page_size,
+        )
+        total = await conn.fetchval("SELECT COUNT(*) FROM bot_links WHERE is_active = TRUE")
+    return list(links), int(total or 0)
 
 
 async def search_files(keyword: str, limit: int) -> list[asyncpg.Record]:
@@ -924,12 +1217,45 @@ async def search_files(keyword: str, limit: int) -> list[asyncpg.Record]:
         )
 
 
+async def search_links(keyword: str, limit: int) -> list[asyncpg.Record]:
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        return list(
+            await conn.fetch(
+                """
+                SELECT *
+                FROM bot_links
+                WHERE is_active = TRUE
+                  AND (
+                    title ILIKE $1
+                    OR url ILIKE $1
+                    OR to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(url, ''))
+                       @@ plainto_tsquery('simple', $2)
+                  )
+                ORDER BY created_at DESC
+                LIMIT $3
+                """,
+                f"%{keyword}%",
+                keyword,
+                limit,
+            )
+        )
+
+
 async def get_file(file_id: int) -> asyncpg.Record | None:
     if file_id <= 0:
         return None
     assert db_pool
     async with db_pool.acquire() as conn:
         return await conn.fetchrow("SELECT * FROM bot_files WHERE id = $1 AND is_active = TRUE", file_id)
+
+
+async def get_link(link_id: int) -> asyncpg.Record | None:
+    if link_id <= 0:
+        return None
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM bot_links WHERE id = $1 AND is_active = TRUE", link_id)
 
 
 async def increment_download_count(file_id: int) -> None:
@@ -942,6 +1268,12 @@ async def mark_file_inactive(file_id: int) -> None:
     assert db_pool
     async with db_pool.acquire() as conn:
         await conn.execute("UPDATE bot_files SET is_active = FALSE, updated_at = NOW() WHERE id = $1", file_id)
+
+
+async def mark_link_inactive(link_id: int) -> None:
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE bot_links SET is_active = FALSE, updated_at = NOW() WHERE id = $1", link_id)
 
 
 async def get_support_contact() -> str | None:
@@ -1096,6 +1428,48 @@ def verify_password(password: str, salt: str, expected_hash: str) -> bool:
 
 def clean_title(value: str) -> str:
     return " ".join(str(value or "").strip().split())[:255]
+
+
+def parse_download_link_input(value: str) -> tuple[str, str] | None:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return None
+
+    title = ""
+    url = ""
+
+    if "|" in text:
+        parts = [part.strip() for part in text.split("|", 1)]
+        left_url = clean_download_url(parts[0])
+        right_url = clean_download_url(parts[1])
+        if left_url:
+            url = left_url
+            title = parts[1]
+        elif right_url:
+            title = parts[0]
+            url = right_url
+    else:
+        match = re.search(r"https?://\S+", text)
+        if match:
+            url = clean_download_url(match.group(0))
+            title = (text[: match.start()] + text[match.end() :]).strip()
+
+    if not url:
+        return None
+
+    if not title:
+        host = urlsplit(url).hostname or "Download Link"
+        title = host.replace("www.", "")
+
+    return clean_title(title) or "Download Link", url
+
+
+def clean_download_url(value: str) -> str:
+    url = str(value or "").strip().strip("<>()[]{}\"'").rstrip(".,;")
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return url
 
 
 def clean_support_contact(value: str) -> str:

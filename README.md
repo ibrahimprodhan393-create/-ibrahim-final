@@ -23,14 +23,18 @@ Official Telegram Bot API docs: https://core.telegram.org/bots/api
 
 ## Features
 
-- Admin-only upload
-- User download
-- English inline button UI
+- Admin-only direct Telegram file upload
+- Admin-only browser download link add/remove
+- User direct Telegram file download
+- User browser download link buttons
+- Separate Direct Download and Browser Download sections
+- English inline button UI with matching emojis
 - English bot messages
-- File list, search, file details, download count
+- File/link list, search, file details, download count for direct files
 - Support button with admin-managed Telegram contact
 - User login with admin-created passwords
 - Passwords are stored as salted hashes, not plaintext
+- Admin can remove/disable a user password later
 - Neon Postgres metadata storage
 - Render Free deploy support
 - `/id` command to find Telegram user ID
@@ -146,15 +150,28 @@ SKIP_WEBHOOK_SETUP=true uvicorn main:app --host 0.0.0.0 --port 3000
 ## Admin Flow
 
 1. Open the bot.
-2. Press `Admin Panel`.
-3. Press `Upload File`.
+2. Press `🛠 Admin Panel`.
+3. Press `📤 Upload Direct File`.
 4. Send a document, video, audio, or photo.
 5. The bot saves the metadata in Neon.
 
+To add a browser download link:
+
+1. Press `🛠 Admin Panel`.
+2. Press `🌐 Add Browser Link`.
+3. Send the link in one of these formats:
+
+```text
+Title | https://example.com/file.zip
+https://example.com/file.zip
+```
+
+The link will appear under `🌐 Browser Download`, and users can open it with a browser download button.
+
 To set the support contact:
 
-1. Press `Admin Panel`.
-2. Press `Set Support ID`.
+1. Press `🛠 Admin Panel`.
+2. Press `🛠 Set Support ID`.
 3. Send the support Telegram ID, username, or t.me link.
 
 Examples:
@@ -167,19 +184,26 @@ https://t.me/yourusername
 
 To create a user login password:
 
-1. Press `Admin Panel`.
-2. Press `Create User Password`.
+1. Press `🛠 Admin Panel`.
+2. Press `🔑 Create User Password`.
 3. Send the password users should login with.
 
 The bot stores only a secure hash in Neon. It does not store the plain password.
 
+To remove a user login password:
+
+1. Press `🛠 Admin Panel`.
+2. Press `🗑 Remove User Password`.
+3. Send the password you want to remove.
+
+The password will be disabled, and users logged in with that password will be logged out.
+
 ## User Flow
 
-1. Press `Login`.
+1. Press `🔐 Login`.
 2. Send the user password.
-3. Press `Browse Files`.
-4. Pick a file.
-5. Press `Download`.
+3. Press `📥 Direct Download` to get Telegram files, or `🌐 Browser Download` to open saved links.
+4. Pick a direct file and press `📥 Direct Download`, or pick a browser link and press `🌐 Browser Download`.
 
 Users cannot upload files.
 
@@ -190,10 +214,10 @@ User main menu:
 ```text
 Welcome.
 
-Please login with your user password to access files.
+Please login with your user password to access downloads.
 
-[ Login ]
-[ Support ]
+[ 🔐 Login ]
+[ 💬 Support ]
 ```
 
 Logged-in user menu:
@@ -201,11 +225,13 @@ Logged-in user menu:
 ```text
 Welcome.
 
-Browse files, search by keyword, then press Download.
+Choose Direct Download for Telegram files or Browser Download for external links.
 
-[ Browse Files ] [ Search ]
-[ Logout ]
-[ Support ]
+[ 📥 Direct Download ]
+[ 🌐 Browser Download ]
+[ 🔎 Search ]
+[ 🚪 Logout ]
+[ 💬 Support ]
 ```
 
 Admin main menu:
@@ -213,28 +239,36 @@ Admin main menu:
 ```text
 Welcome.
 
-Browse files, search by keyword, then press Download.
+Choose Direct Download for Telegram files or Browser Download for external links.
 
-[ Browse Files ] [ Search ]
-[ Admin Panel ]
-[ Support ]
+[ 📥 Direct Download ]
+[ 🌐 Browser Download ]
+[ 🔎 Search ]
+[ 🛠 Admin Panel ]
+[ 💬 Support ]
 ```
 
 Admin panel:
 
 ```text
-Admin Panel
+🛠 Admin Panel
 
-Press Upload File to add a new file.
-Press Create User Password to add a login password.
-Press File List to view saved files.
-Press Set Support ID to update the support contact.
+📤 Upload Direct File adds Telegram files.
+🌐 Add Browser Link adds external download links.
+🔑 Create User Password adds a login password.
+🗑 Remove User Password disables a login password.
+📥 Direct Files shows Telegram files.
+🌐 Browser Links shows external links.
+🛠 Set Support ID updates the support contact.
 
-[ Upload File ]
-[ Create User Password ]
-[ Set Support ID ]
-[ File List ]
-[ Main Menu ]
+[ 📤 Upload Direct File ]
+[ 🌐 Add Browser Link ]
+[ 🔑 Create User Password ]
+[ 🗑 Remove User Password ]
+[ 🛠 Set Support ID ]
+[ 📥 Direct Files ]
+[ 🌐 Browser Links ]
+[ 🏠 Main Menu ]
 ```
 
 Support:
@@ -245,14 +279,14 @@ Support
 For help, contact the admin:
 @yourusername
 
-[ Contact Admin ]
-[ Main Menu ]
+[ 💬 Contact Admin ]
+[ 🏠 Main Menu ]
 ```
 
-File details:
+Direct file details:
 
 ```text
-Movie.zip
+📥 Movie.zip
 
 File name: Movie.zip
 Size: 2.1 GB
@@ -260,6 +294,18 @@ Type: document
 Downloads: 12
 Uploaded: 2026-04-27
 
-[ Download ]
-[ File List ] [ Main Menu ]
+[ 📥 Direct Download ]
+[ 📥 Direct Files ] [ 🏠 Main Menu ]
+```
+
+Browser link details:
+
+```text
+🌐 Movie Download Link
+
+Link: https://example.com/movie.zip
+Added: 2026-04-27
+
+[ 🌐 Browser Download ]
+[ 🌐 Browser Links ] [ 🏠 Main Menu ]
 ```

@@ -3,6 +3,10 @@
 Upload these files and folders to GitHub for the final Python version:
 
 ```text
+app/
+  __init__.py
+  main.py
+
 db/
   schema.sql
 
@@ -21,10 +25,6 @@ GITHUB_UPLOAD_FILES.md
 Optional backup folders/files:
 
 ```text
-app/
-  __init__.py
-  main.py
-
 src/
   server.js
 
