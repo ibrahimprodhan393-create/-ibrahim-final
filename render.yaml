@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: telegram-neon-file-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: WEBHOOK_BASE_URL
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: PAGE_SIZE
+        value: 5
+      - key: DB_POOL_SIZE
+        value: 2
+      - key: USER_PASSWORD_MIN_LENGTH
+        value: 6
+      - key: PROTECT_CONTENT
+        value: false
+      - key: DROP_PENDING_UPDATES
+        value: false
