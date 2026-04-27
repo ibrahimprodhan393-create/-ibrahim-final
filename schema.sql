@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS bot_links (
   title TEXT NOT NULL,
   url TEXT NOT NULL,
   description TEXT,
+  section_id BIGINT,
   uploader_id BIGINT NOT NULL,
   uploader_name TEXT,
   download_count BIGINT NOT NULL DEFAULT 0,
@@ -109,15 +110,42 @@ ALTER TABLE bot_links
   ADD COLUMN IF NOT EXISTS description TEXT;
 
 ALTER TABLE bot_links
+  ADD COLUMN IF NOT EXISTS section_id BIGINT;
+
+ALTER TABLE bot_links
   ADD COLUMN IF NOT EXISTS download_count BIGINT NOT NULL DEFAULT 0;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'bot_links_section_id_fkey'
+  ) THEN
+    ALTER TABLE bot_links
+      ADD CONSTRAINT bot_links_section_id_fkey
+      FOREIGN KEY (section_id) REFERENCES bot_sections(id);
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS bot_links_active_created_idx
   ON bot_links (is_active, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS bot_links_active_section_created_idx
+  ON bot_links (is_active, section_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS bot_links_search_idx
   ON bot_links USING GIN (
     to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || coalesce(url, ''))
   );
+
+UPDATE bot_links
+SET section_id = (
+  SELECT id
+  FROM bot_sections
+  WHERE is_active = TRUE
+  ORDER BY sort_order ASC, id ASC
+  LIMIT 1
+)
+WHERE section_id IS NULL;
 
 CREATE TABLE IF NOT EXISTS bot_users (
   telegram_id BIGINT PRIMARY KEY,
