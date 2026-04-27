@@ -390,7 +390,7 @@ async def handle_callback(query: dict[str, Any]) -> None:
             await deny_locked_callback(query["id"], chat_id, message_id)
             return
         await answer_callback(query["id"])
-        await show_file_section(chat_id, message_id, user)
+        await show_file_section(chat_id, message_id, user, safe_int(raw_value))
     elif action == "sections":
         if not await user_has_access(user.get("id")):
             await deny_locked_callback(query["id"], chat_id, message_id)
@@ -887,8 +887,21 @@ async def show_profile(chat_id: int, message_id: int, user: dict[str, Any]) -> N
     await edit_message(chat_id, message_id, profile_text(user, profile), profile_keyboard())
 
 
-async def show_file_section(chat_id: int, message_id: int, user: dict[str, Any]) -> None:
-    await edit_message(chat_id, message_id, file_section_text(), file_section_keyboard(is_admin(user.get("id"))))
+async def show_file_section(chat_id: int, message_id: int, user: dict[str, Any], page: int = 0) -> None:
+    page = max(0, page)
+    sections, total = await list_sections(page, PAGE_SIZE)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    if page >= total_pages:
+        await show_file_section(chat_id, message_id, user, total_pages - 1)
+        return
+
+    text = file_section_text(total, page, total_pages)
+    await edit_message(
+        chat_id,
+        message_id,
+        text,
+        file_section_keyboard(sections, page, total_pages, is_admin(user.get("id"))),
+    )
 
 
 async def show_section_list(chat_id: int, message_id: int, page: int, user: dict[str, Any]) -> None:
@@ -900,7 +913,12 @@ async def show_section_list(chat_id: int, message_id: int, page: int, user: dict
         return
 
     if not sections:
-        await edit_message(chat_id, message_id, "No sections found yet.", file_section_keyboard(is_admin(user.get("id"))))
+        await edit_message(
+            chat_id,
+            message_id,
+            "No sections found yet.",
+            file_section_keyboard([], 0, 1, is_admin(user.get("id"))),
+        )
         return
 
     lines = [f"<b>🗂 Sections</b>", f"Page {page + 1}/{total_pages}", ""]
@@ -1022,13 +1040,16 @@ def profile_text(user: dict[str, Any], profile: asyncpg.Record | None) -> str:
     )
 
 
-def file_section_text() -> str:
+def file_section_text(total_sections: int, page: int, total_pages: int) -> str:
     return "\n".join(
         [
             "<b>📂 File Details</b>",
             "",
-            "Open Sections to browse files by your custom categories.",
-            "Then open file details and press direct download.",
+            f"🗂 Sections: {e(total_sections)}",
+            f"📄 Page: {e(page + 1)}/{e(total_pages)}",
+            "",
+            "Select a section below to open files added from Admin Panel.",
+            "You can also open Browser Links, All Direct Files, or Search.",
         ]
     )
 
@@ -1703,17 +1724,34 @@ def profile_keyboard() -> dict[str, Any]:
     }
 
 
-def file_section_keyboard(admin: bool) -> dict[str, Any]:
-    rows = [
-        [
-            {"text": "🗂 Sections", "callback_data": "sections:0"},
-            {"text": "🌐 Browser Links", "callback_data": "links:0"},
-        ],
-        [
-            {"text": "📥 All Direct Files", "callback_data": "list:0"},
-            {"text": "🔎 Search", "callback_data": "search"},
-        ],
-    ]
+def file_section_keyboard(
+    sections: list[asyncpg.Record],
+    page: int,
+    total_pages: int,
+    admin: bool,
+) -> dict[str, Any]:
+    rows: list[list[dict[str, Any]]] = []
+    for section in sections:
+        file_count = safe_int(section["file_count"])
+        rows.append(
+            [
+                {
+                    "text": f"🗂 {trim_button(section['name'])} ({file_count})",
+                    "callback_data": f"sfiles:{section['id']}|0",
+                }
+            ]
+        )
+
+    nav = []
+    if page > 0:
+        nav.append({"text": "⬅️ Previous Sections", "callback_data": f"filesec:{page - 1}"})
+    if page + 1 < total_pages:
+        nav.append({"text": "Next Sections ➡️", "callback_data": f"filesec:{page + 1}"})
+    if nav:
+        rows.append(nav)
+
+    rows.append([{"text": "🌐 Browser Links", "callback_data": "links:0"}])
+    rows.append([{"text": "📥 All Direct Files", "callback_data": "list:0"}, {"text": "🔎 Search", "callback_data": "search"}])
     if admin:
         rows.append([{"text": "🗂 Manage Sections", "callback_data": "secadmin:0"}])
         rows.append([{"text": "🛠 Admin Panel", "callback_data": "admin"}])
