@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS bot_files (
   mime_type TEXT,
   file_size BIGINT,
   title TEXT,
+  description TEXT,
   uploader_id BIGINT NOT NULL,
   uploader_name TEXT,
   download_count BIGINT NOT NULL DEFAULT 0,
@@ -21,13 +22,14 @@ CREATE INDEX IF NOT EXISTS bot_files_active_created_idx
 
 CREATE INDEX IF NOT EXISTS bot_files_search_idx
   ON bot_files USING GIN (
-    to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(file_name, '') || ' ' || coalesce(mime_type, ''))
+    to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || coalesce(file_name, '') || ' ' || coalesce(mime_type, ''))
   );
 
 CREATE TABLE IF NOT EXISTS bot_links (
   id BIGSERIAL PRIMARY KEY,
   title TEXT NOT NULL,
   url TEXT NOT NULL,
+  description TEXT,
   uploader_id BIGINT NOT NULL,
   uploader_name TEXT,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -40,7 +42,7 @@ CREATE INDEX IF NOT EXISTS bot_links_active_created_idx
 
 CREATE INDEX IF NOT EXISTS bot_links_search_idx
   ON bot_links USING GIN (
-    to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(url, ''))
+    to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || coalesce(url, ''))
   );
 
 CREATE TABLE IF NOT EXISTS bot_users (
@@ -65,6 +67,7 @@ CREATE TABLE IF NOT EXISTS bot_user_passwords (
   id BIGSERIAL PRIMARY KEY,
   password_hash TEXT NOT NULL,
   salt TEXT NOT NULL,
+  password_preview TEXT,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_by BIGINT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

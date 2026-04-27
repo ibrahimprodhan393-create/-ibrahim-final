@@ -25,6 +25,7 @@ Official Telegram Bot API docs: https://core.telegram.org/bots/api
 
 - Admin-only direct Telegram file upload
 - Admin-only browser download link add/remove
+- File and link description support during upload/add
 - User direct Telegram file download
 - User browser download link buttons
 - Separate Direct Download and Browser Download sections
@@ -34,6 +35,8 @@ Official Telegram Bot API docs: https://core.telegram.org/bots/api
 - Support button with admin-managed Telegram contact
 - User login with admin-created passwords
 - Passwords are stored as salted hashes, not plaintext
+- Admin password preview list (masked) inside Admin Panel
+- Admin bot user list with Telegram ID and last seen
 - Admin can remove/disable a user password later
 - Neon Postgres metadata storage
 - Render Free deploy support
@@ -152,7 +155,13 @@ SKIP_WEBHOOK_SETUP=true uvicorn main:app --host 0.0.0.0 --port 3000
 1. Open the bot.
 2. Press `🛠 Admin Panel`.
 3. Press `📤 Upload Direct File`.
-4. Send a document, video, audio, or photo.
+4. Send a document, video, audio, or photo with optional caption:
+
+```text
+Title
+Title | Description
+```
+
 5. The bot saves the metadata in Neon.
 
 To add a browser download link:
@@ -163,6 +172,7 @@ To add a browser download link:
 
 ```text
 Title | https://example.com/file.zip
+Title | https://example.com/file.zip | Description
 https://example.com/file.zip
 ```
 
@@ -190,6 +200,13 @@ To create a user login password:
 
 The bot stores only a secure hash in Neon. It does not store the plain password.
 
+To view created password previews:
+
+1. Press `🛠 Admin Panel`.
+2. Press `🔍 Password List`.
+
+This list shows masked previews only (for security), status, and usage count.
+
 To remove a user login password:
 
 1. Press `🛠 Admin Panel`.
@@ -197,6 +214,13 @@ To remove a user login password:
 3. Send the password you want to remove.
 
 The password will be disabled, and users logged in with that password will be logged out.
+
+To see all users who used the bot:
+
+1. Press `🛠 Admin Panel`.
+2. Press `👥 Bot Users`.
+
+The list shows user name/username, Telegram ID, access status, and last seen time.
 
 ## User Flow
 
