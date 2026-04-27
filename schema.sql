@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS bot_files (
   UNIQUE (file_unique_id, kind)
 );
 
+ALTER TABLE bot_files
+  ADD COLUMN IF NOT EXISTS description TEXT;
+
 CREATE INDEX IF NOT EXISTS bot_files_active_created_idx
   ON bot_files (is_active, created_at DESC);
 
@@ -37,6 +40,9 @@ CREATE TABLE IF NOT EXISTS bot_links (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE bot_links
+  ADD COLUMN IF NOT EXISTS description TEXT;
+
 CREATE INDEX IF NOT EXISTS bot_links_active_created_idx
   ON bot_links (is_active, created_at DESC);
 
@@ -55,6 +61,15 @@ CREATE TABLE IF NOT EXISTS bot_users (
   authorized_by_password_id BIGINT,
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE bot_users
+  ADD COLUMN IF NOT EXISTS is_authorized BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE bot_users
+  ADD COLUMN IF NOT EXISTS authorized_at TIMESTAMPTZ;
+
+ALTER TABLE bot_users
+  ADD COLUMN IF NOT EXISTS authorized_by_password_id BIGINT;
 
 CREATE TABLE IF NOT EXISTS bot_settings (
   key TEXT PRIMARY KEY,
@@ -76,6 +91,15 @@ CREATE TABLE IF NOT EXISTS bot_user_passwords (
   last_used_at TIMESTAMPTZ,
   use_count BIGINT NOT NULL DEFAULT 0
 );
+
+ALTER TABLE bot_user_passwords
+  ADD COLUMN IF NOT EXISTS password_preview TEXT;
+
+ALTER TABLE bot_user_passwords
+  ADD COLUMN IF NOT EXISTS deactivated_by BIGINT;
+
+ALTER TABLE bot_user_passwords
+  ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS bot_user_passwords_active_idx
   ON bot_user_passwords (is_active, created_at DESC);

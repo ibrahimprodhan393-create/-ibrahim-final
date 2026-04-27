@@ -1014,6 +1014,9 @@ async def migrate() -> None:
               UNIQUE (file_unique_id, kind)
             );
 
+            ALTER TABLE bot_files
+              ADD COLUMN IF NOT EXISTS description TEXT;
+
             CREATE INDEX IF NOT EXISTS bot_files_active_created_idx
               ON bot_files (is_active, created_at DESC);
 
@@ -1021,9 +1024,6 @@ async def migrate() -> None:
               ON bot_files USING GIN (
                 to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || coalesce(file_name, '') || ' ' || coalesce(mime_type, ''))
               );
-
-            ALTER TABLE bot_files
-              ADD COLUMN IF NOT EXISTS description TEXT;
 
             CREATE TABLE IF NOT EXISTS bot_links (
               id BIGSERIAL PRIMARY KEY,
@@ -1037,6 +1037,9 @@ async def migrate() -> None:
               updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
+            ALTER TABLE bot_links
+              ADD COLUMN IF NOT EXISTS description TEXT;
+
             CREATE INDEX IF NOT EXISTS bot_links_active_created_idx
               ON bot_links (is_active, created_at DESC);
 
@@ -1044,9 +1047,6 @@ async def migrate() -> None:
               ON bot_links USING GIN (
                 to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || coalesce(url, ''))
               );
-
-            ALTER TABLE bot_links
-              ADD COLUMN IF NOT EXISTS description TEXT;
 
             CREATE TABLE IF NOT EXISTS bot_users (
               telegram_id BIGINT PRIMARY KEY,
