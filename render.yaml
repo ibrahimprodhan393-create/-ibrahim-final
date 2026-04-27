@@ -26,8 +26,6 @@ services:
         value: 5
       - key: DB_POOL_SIZE
         value: 2
-      - key: USER_PASSWORD_MIN_LENGTH
-        value: 6
       - key: PROTECT_CONTENT
         value: false
       - key: DROP_PENDING_UPDATES

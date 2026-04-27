@@ -198,24 +198,12 @@ async def handle_message(message: dict[str, Any]) -> None:
         await handle_download_link_add(chat_id, user, text, state)
         return
 
-    if state == "new_user_password":
-        await handle_new_user_password(chat_id, user, text)
-        return
-
-    if state == "remove_user_password":
-        await handle_remove_user_password(chat_id, user, text)
-        return
-
     if state == "new_section":
         await handle_new_section(chat_id, user, text)
         return
 
     if state and state.startswith("rename_section:"):
         await handle_rename_section(chat_id, user, text, state)
-        return
-
-    if state == "login_password":
-        await handle_login_attempt(chat_id, user, text)
         return
 
     if state and state.startswith("editfile:"):
@@ -281,17 +269,12 @@ async def handle_command(message: dict[str, Any], text: str) -> None:
         return
 
     if command == "/login":
-        if is_admin(user.get("id")):
-            await send_message(chat_id, "Admins do not need to login.", reply_markup=admin_panel_keyboard())
-            return
-        user_states[user["id"]] = "login_password"
-        await send_message(chat_id, login_prompt_text(), reply_markup=cancel_keyboard())
+        await send_message(chat_id, "Login password is disabled. You can access files directly.", reply_markup=main_menu_keyboard(is_admin(user.get("id")), True))
         return
 
     if command == "/logout":
-        await set_user_authorized(user.get("id"), False)
         user_states.pop(user.get("id"), None)
-        await send_message(chat_id, "You have been logged out.", reply_markup=main_menu_keyboard(False, False))
+        await send_message(chat_id, "Logout is disabled because downloads are open.", reply_markup=main_menu_keyboard(is_admin(user.get("id")), True))
         return
 
     if command == "/id":
@@ -412,9 +395,6 @@ async def handle_callback(query: dict[str, Any]) -> None:
         "upload",
         "addlink",
         "setsupport",
-        "createpass",
-        "removepass",
-        "login",
         "editfile",
         "editfname",
         "editlname",
@@ -705,17 +685,11 @@ async def handle_callback(query: dict[str, Any]) -> None:
         await answer_callback(query["id"])
         await edit_message(chat_id, message_id, "Send a file name, link title, or keyword you want to search for.", cancel_keyboard())
     elif action == "login":
-        if is_admin(user.get("id")):
-            await answer_callback(query["id"], "Admins do not need to login.")
-            await edit_message(chat_id, message_id, admin_panel_text(), admin_panel_keyboard())
-            return
-        user_states[user["id"]] = "login_password"
-        await answer_callback(query["id"])
-        await edit_message(chat_id, message_id, login_prompt_text(), cancel_keyboard())
+        await answer_callback(query["id"], "Login password is disabled.")
+        await show_main_menu(chat_id, message_id, user)
     elif action == "logout":
-        await set_user_authorized(user.get("id"), False)
-        await answer_callback(query["id"], "Logged out.")
-        await edit_message(chat_id, message_id, main_menu_text(user, False), main_menu_keyboard(False, False))
+        await answer_callback(query["id"], "Logout is disabled.")
+        await show_main_menu(chat_id, message_id, user)
     elif action == "admin":
         if not is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins only.", True)
@@ -750,21 +724,14 @@ async def handle_callback(query: dict[str, Any]) -> None:
             await answer_callback(query["id"], "Admins only.", True)
             return
         target_user_id, page = parse_target_page(raw_value)
-        target = await get_user(target_user_id)
-        if not target:
-            await answer_callback(query["id"], "User not found.", True)
-            await show_user_list(chat_id, message_id, page, user)
-            return
-        next_authorized = not bool(target["is_authorized"])
-        await set_user_authorized(target_user_id, next_authorized, None)
-        await answer_callback(query["id"], "User access updated.")
+        await answer_callback(query["id"], "Password access control removed.")
         await show_user_detail(chat_id, message_id, target_user_id, page, user)
     elif action == "passlist":
         if not is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins only.", True)
             return
-        await answer_callback(query["id"])
-        await show_password_list(chat_id, message_id, safe_int(raw_value), user)
+        await answer_callback(query["id"], "User password option removed.")
+        await edit_message(chat_id, message_id, admin_panel_text(), admin_panel_keyboard())
     elif action == "secadmin":
         if not is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins only.", True)
@@ -952,26 +919,14 @@ async def handle_callback(query: dict[str, Any]) -> None:
         if not is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins only.", True)
             return
-        user_states[user["id"]] = "new_user_password"
-        await answer_callback(query["id"])
-        await edit_message(
-            chat_id,
-            message_id,
-            f"Send the new user login password.\n\nMinimum length: {USER_PASSWORD_MIN_LENGTH} characters.\nThe bot stores only a secure hash, not the plain password.",
-            back_keyboard("admin"),
-        )
+        await answer_callback(query["id"], "User password option removed.")
+        await edit_message(chat_id, message_id, admin_panel_text(), admin_panel_keyboard())
     elif action == "removepass":
         if not is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins only.", True)
             return
-        user_states[user["id"]] = "remove_user_password"
-        await answer_callback(query["id"])
-        await edit_message(
-            chat_id,
-            message_id,
-            "Send the user password you want to remove.\n\nMatching active passwords will be disabled, and users logged in with that password will be logged out.",
-            back_keyboard("admin"),
-        )
+        await answer_callback(query["id"], "User password option removed.")
+        await edit_message(chat_id, message_id, admin_panel_text(), admin_panel_keyboard())
     elif action == "del":
         if not is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins only.", True)
@@ -1004,14 +959,12 @@ async def handle_callback(query: dict[str, Any]) -> None:
 
 async def send_main_menu(chat_id: int, user: dict[str, Any]) -> None:
     admin = is_admin(user.get("id"))
-    authorized = admin or await is_user_authorized(user.get("id"))
-    await send_message(chat_id, main_menu_text(user, authorized), reply_markup=main_menu_keyboard(admin, authorized))
+    await send_message(chat_id, main_menu_text(user, True), reply_markup=main_menu_keyboard(admin, True))
 
 
 async def show_main_menu(chat_id: int, message_id: int, user: dict[str, Any]) -> None:
     admin = is_admin(user.get("id"))
-    authorized = admin or await is_user_authorized(user.get("id"))
-    await edit_message(chat_id, message_id, main_menu_text(user, authorized), main_menu_keyboard(admin, authorized))
+    await edit_message(chat_id, message_id, main_menu_text(user, True), main_menu_keyboard(admin, True))
 
 
 async def show_profile(chat_id: int, message_id: int, user: dict[str, Any]) -> None:
@@ -1261,12 +1214,6 @@ async def show_link_section_picker(chat_id: int, message_id: int, link: asyncpg.
 
 def main_menu_text(user: dict[str, Any], authorized: bool = True) -> str:
     name = f", {e(user.get('first_name'))}" if user.get("first_name") else ""
-    if not authorized:
-        return (
-            f"👋 Welcome{name}.\n\n"
-            "🧭 Open 👤 My Profile or 📂 File Details.\n"
-            "🔐 Login is required to access downloads."
-        )
     return (
         f"👋 Welcome{name}.\n\n"
         "👤 Open My Profile first, then 📂 File Details.\n"
@@ -1283,7 +1230,7 @@ def profile_text(
     telegram_id = safe_int(user.get("id"))
     display = display_name(user)
     username = f"@{user.get('username')}" if user.get("username") else "-"
-    access = "Authorized" if is_admin(telegram_id) or bool(profile and profile["is_authorized"]) else "Locked"
+    access = "Open Access"
     last_seen = format_date(profile["last_seen_at"]) if profile else "unknown"
     return "\n".join(
         [
@@ -1530,10 +1477,7 @@ def admin_panel_text() -> str:
         "📊 Download Stats: total file/link downloads and top items.\n"
         "✏️ File Details: edit file name, description, and change section.\n"
         "✏️ Link Details: edit title, URL, and description.\n"
-        "🔑 Create User Password: generate login password.\n"
-        "🔍 Password List: view password previews.\n"
-        "🗑 Remove User Password: disable password.\n"
-        "👥 Bot Users: lock or unlock users.\n"
+        "👥 Bot Users: view users who opened the bot.\n"
         "🛠 Set Support ID: update support contact."
     )
 
@@ -1903,27 +1847,7 @@ async def show_link_detail(chat_id: int, message_id: int, link_id: int, user: di
 
 
 async def show_password_list(chat_id: int, message_id: int, page: int, user: dict[str, Any]) -> None:
-    page = max(0, page)
-    passwords, total = await list_user_passwords(page, PAGE_SIZE)
-    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-
-    if page >= total_pages:
-        await show_password_list(chat_id, message_id, total_pages - 1, user)
-        return
-
-    if not passwords:
-        await edit_message(chat_id, message_id, "No user passwords have been created yet.", back_keyboard("admin"))
-        return
-
-    lines = [f"<b>🔍 Password List</b>", f"Page {page + 1}/{total_pages}", ""]
-    for index, item in enumerate(passwords, start=page * PAGE_SIZE + 1):
-        status = "Active" if item["is_active"] else "Disabled"
-        preview = item["password_preview"] or "Hidden (old)"
-        lines.append(
-            f"{index}. {e(preview)} | {status} | Uses: {e(item['use_count'])} | Created: {e(format_date(item['created_at']))}"
-        )
-    lines += ["", "Security note: plain passwords are not stored, only preview + hash."]
-    await edit_message(chat_id, message_id, "\n".join(lines), password_list_keyboard(page, total_pages))
+    await edit_message(chat_id, message_id, "User password option has been removed.", back_keyboard("admin"))
 
 
 async def show_user_list(chat_id: int, message_id: int, page: int, user: dict[str, Any]) -> None:
@@ -1949,7 +1873,7 @@ async def show_user_list(chat_id: int, message_id: int, page: int, user: dict[st
             display = username
         else:
             display = str(item["telegram_id"])
-        access = "Authorized" if item["is_authorized"] else "Locked"
+        access = "Open Access"
         lines.append(
             f"{index}. {e(display)} | 🆔 <code>{e(item['telegram_id'])}</code> | 🔐 {access} | 🕒 {e(format_date(item['last_seen_at']))}"
         )
@@ -1970,7 +1894,7 @@ async def show_user_detail(chat_id: int, message_id: int, target_user_id: int, p
         display_name_value = username
     else:
         display_name_value = str(target["telegram_id"])
-    access = "Authorized" if target["is_authorized"] else "Locked"
+    access = "Open Access"
     user_total_downloads, user_total_files = await get_user_download_summary(target_user_id)
     lines = [
         "<b>👤 User Details</b>",
@@ -2030,22 +1954,13 @@ async def send_stored_file(chat_id: int, file_id: int, user_id: int = 0) -> None
 
 
 def main_menu_keyboard(admin: bool, authorized: bool) -> dict[str, Any]:
-    if admin or authorized:
-        keyboard = [
-            [{"text": "👤 My Profile", "callback_data": "profile"}],
-            [{"text": "📂 File Details", "callback_data": "filesec"}],
-        ]
-    else:
-        keyboard = [
-            [{"text": "👤 My Profile", "callback_data": "profile"}],
-            [{"text": "📂 File Details", "callback_data": "filesec"}],
-            [{"text": "🔐 Login", "callback_data": "login"}],
-        ]
+    keyboard = [
+        [{"text": "👤 My Profile", "callback_data": "profile"}],
+        [{"text": "📂 File Details", "callback_data": "filesec"}],
+    ]
 
     if admin:
         keyboard.append([{"text": "🛠 Admin Panel", "callback_data": "admin"}])
-    elif authorized:
-        keyboard.append([{"text": "🚪 Logout", "callback_data": "logout"}])
 
     keyboard.append([{"text": "💬 Support", "callback_data": "support"}])
     return {"inline_keyboard": keyboard}
@@ -2112,17 +2027,10 @@ def admin_panel_keyboard() -> dict[str, Any]:
                 {"text": "📊 Download Stats", "callback_data": "stats"},
             ],
             [
-                {"text": "🔑 Create User Password", "callback_data": "createpass"},
-                {"text": "🔍 Password List", "callback_data": "passlist:0"},
-            ],
-            [
                 {"text": "👥 Bot Users", "callback_data": "users:0"},
                 {"text": "🛠 Set Support ID", "callback_data": "setsupport"},
             ],
-            [
-                {"text": "🗑 Remove User Password", "callback_data": "removepass"},
-                {"text": "🏠 Main Menu", "callback_data": "menu"},
-            ],
+            [{"text": "🏠 Main Menu", "callback_data": "menu"}],
         ]
     }
 
@@ -2399,11 +2307,8 @@ def user_list_keyboard(users: list[asyncpg.Record], page: int, total_pages: int)
 
 
 def user_detail_keyboard(user: asyncpg.Record, page: int) -> dict[str, Any]:
-    is_authorized = bool(user["is_authorized"])
-    toggle_text = "🔒 Lock User" if is_authorized else "✅ Unlock User"
     return {
         "inline_keyboard": [
-            [{"text": toggle_text, "callback_data": f"utoggle:{user['telegram_id']}|{page}"}],
             [{"text": "👥 Bot Users", "callback_data": f"users:{page}"}],
             [{"text": "🛠 Admin Panel", "callback_data": "admin"}],
         ]
@@ -2422,7 +2327,7 @@ def support_keyboard(contact: str | None) -> dict[str, Any]:
 def login_keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
-            [{"text": "🔐 Login", "callback_data": "login"}],
+            [{"text": "🏠 Main Menu", "callback_data": "menu"}],
             [{"text": "💬 Support", "callback_data": "support"}],
         ]
     }
@@ -2779,16 +2684,11 @@ async def check_db_health() -> bool:
 
 
 async def is_user_authorized(user_id: Any) -> bool:
-    if not user_id:
-        return False
-    assert db_pool
-    async with db_pool.acquire() as conn:
-        authorized = await conn.fetchval("SELECT is_authorized FROM bot_users WHERE telegram_id = $1", safe_int(user_id))
-    return bool(authorized)
+    return bool(user_id)
 
 
 async def user_has_access(user_id: Any) -> bool:
-    return is_admin(user_id) or await is_user_authorized(user_id)
+    return bool(user_id)
 
 
 async def set_user_authorized(user_id: Any, authorized: bool, password_id: int | None = None) -> None:

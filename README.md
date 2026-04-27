@@ -39,12 +39,8 @@ Official Telegram Bot API docs: https://core.telegram.org/bots/api
 - English bot messages
 - File/link list, search, file details, download count for direct files
 - Support button with admin-managed Telegram contact
-- User login with admin-created passwords
-- Passwords are stored as salted hashes, not plaintext
-- Admin password preview list (masked) inside Admin Panel
 - Admin bot user list with Telegram ID and last seen
-- Admin can lock/unlock user access from user details
-- Admin can remove/disable a user password later
+- Open access for users, no user password login required
 - Neon Postgres metadata storage
 - Render Free deploy support
 - `/id` command to find Telegram user ID
@@ -103,7 +99,6 @@ MONITOR_SECRET=your_monitor_secret
 PYTHON_VERSION=3.12.8
 DB_POOL_SIZE=2
 PAGE_SIZE=5
-USER_PASSWORD_MIN_LENGTH=6
 PROTECT_CONTENT=false
 DROP_PENDING_UPDATES=false
 ```
@@ -265,50 +260,19 @@ Examples:
 https://t.me/yourusername
 ```
 
-To create a user login password:
-
-1. Press `🛠 Admin Panel`.
-2. Press `🔑 Create User Password`.
-3. Send the password users should login with.
-
-The bot stores only a secure hash in Neon. It does not store the plain password.
-
-To view created password previews:
-
-1. Press `🛠 Admin Panel`.
-2. Press `🔍 Password List`.
-
-This list shows masked previews only (for security), status, and usage count.
-
-To remove a user login password:
-
-1. Press `🛠 Admin Panel`.
-2. Press `🗑 Remove User Password`.
-3. Send the password you want to remove.
-
-The password will be disabled, and users logged in with that password will be logged out.
-
 To see all users who used the bot:
 
 1. Press `🛠 Admin Panel`.
 2. Press `👥 Bot Users`.
 
-The list shows user name/username, Telegram ID, access status, and last seen time.
-
-To lock or unlock a user:
-
-1. Press `👥 Bot Users`.
-2. Open any user.
-3. Press `🔒 Lock User` or `✅ Unlock User`.
+The list shows user name/username, Telegram ID, open access status, and last seen time.
 
 ## User Flow
 
-1. Press `🔐 Login`.
-2. Send the user password.
-3. Open `👤 My Profile` (first section).
-4. Open `📂 File Details`.
-5. Pick a file name from `📥 Direct Files` or `🌐 Browser Links`.
-6. Open file details and press download.
+1. Open `👤 My Profile` (first section).
+2. Open `📂 File Details`.
+3. Pick a file name from `📥 Direct Files` or `🌐 Browser Links`.
+4. Open file details and press download.
 
 Users cannot upload files.
 
@@ -319,22 +283,10 @@ User main menu:
 ```text
 Welcome.
 
-Please login with your user password to access downloads.
-
-[ 🔐 Login ]
-[ 💬 Support ]
-```
-
-Logged-in user menu:
-
-```text
-Welcome.
-
 Open My Profile first, then File Details to browse file names and download.
 
 [ 👤 My Profile ]
 [ 📂 File Details ]
-[ 🚪 Logout ]
 [ 💬 Support ]
 ```
 
@@ -361,9 +313,6 @@ Admin panel:
 🌐 Add Browser Link adds external download links.
 ✏️ Open any file and press Edit File Name, Change Section, or Edit Details.
 ✏️ Open any browser link and press Edit Link to update title/URL/description.
-🔑 Create User Password adds a login password.
-🔍 Password List shows created password previews.
-🗑 Remove User Password disables a login password.
 👥 Bot Users shows everyone who used the bot.
 📥 Direct Files shows Telegram files.
 🌐 Browser Links shows external links.
@@ -371,9 +320,8 @@ Admin panel:
 
 [ 📤 Upload Direct File ] [ 🗂 Manage Sections ]
 [ 📥 Direct Files ] [ 🌐 Browser Links ]
-[ 🌐 Add Browser Link ] [ 👥 Bot Users ]
-[ 🔑 Create User Password ] [ 🔍 Password List ]
-[ 🗑 Remove User Password ] [ 🛠 Set Support ID ]
+[ 🌐 Add Browser Link ] [ 📊 Download Stats ]
+[ 👥 Bot Users ] [ 🛠 Set Support ID ]
 [ 🏠 Main Menu ]
 ```
 
