@@ -26,6 +26,7 @@ Official Telegram Bot API docs: https://core.telegram.org/bots/api
 - Admin-only direct Telegram file upload
 - Admin-only browser download link add/remove
 - File and link description support during upload/add
+- Admin can edit existing direct-file description later
 - User direct Telegram file download
 - User browser download link buttons
 - Separate Direct Download and Browser Download sections
@@ -42,6 +43,7 @@ Official Telegram Bot API docs: https://core.telegram.org/bots/api
 - Render Free deploy support
 - `/id` command to find Telegram user ID
 - `/healthz` endpoint for uptime monitor
+- `/monitor/{MONITOR_SECRET}` runtime monitor endpoint
 
 ## Project Files
 
@@ -91,6 +93,7 @@ DATABASE_URL=your_neon_connection_string
 ADMIN_IDS=your_telegram_user_id
 WEBHOOK_SECRET=your_random_secret
 WEBHOOK_BASE_URL=https://your-render-service.onrender.com
+MONITOR_SECRET=your_monitor_secret
 PYTHON_VERSION=3.12.8
 DB_POOL_SIZE=2
 PAGE_SIZE=5
@@ -106,7 +109,7 @@ TELEGRAM_API_ROOT=https://api.telegram.org
 SKIP_WEBHOOK_SETUP=false
 ```
 
-`WEBHOOK_SECRET` is made by you. Use letters, numbers, underscore, or dash. Do not use your bot token as the webhook secret.
+`WEBHOOK_SECRET` and `MONITOR_SECRET` are made by you. Use letters, numbers, underscore, or dash. Do not use your bot token as these secrets.
 
 ## Neon Database Setup
 
@@ -136,6 +139,14 @@ https://your-service.onrender.com/healthz
 ```
 
 Set the interval to 5 or 10 minutes. This helps keep the service awake, but it is not a guaranteed 24/7 SLA. For guaranteed always-on, use a paid Render instance.
+
+Detailed monitor endpoint:
+
+```text
+https://your-service.onrender.com/monitor/your_monitor_secret
+```
+
+It shows uptime seconds, update counters, and last error info.
 
 ## Local Run
 
@@ -177,6 +188,20 @@ https://example.com/file.zip
 ```
 
 The link will appear under `🌐 Browser Download`, and users can open it with a browser download button.
+
+To edit description of an existing uploaded direct file:
+
+1. Press `📥 Direct Files`.
+2. Open a file.
+3. Press `✏️ Edit Details`.
+4. Send one of these:
+
+```text
+Title | Description
+| Description only
+Description only
+clear
+```
 
 To set the support contact:
 
@@ -279,19 +304,20 @@ Admin panel:
 
 📤 Upload Direct File adds Telegram files.
 🌐 Add Browser Link adds external download links.
+✏️ Open any file and press Edit Details to update description later.
 🔑 Create User Password adds a login password.
+🔍 Password List shows created password previews.
 🗑 Remove User Password disables a login password.
+👥 Bot Users shows everyone who used the bot.
 📥 Direct Files shows Telegram files.
 🌐 Browser Links shows external links.
 🛠 Set Support ID updates the support contact.
 
-[ 📤 Upload Direct File ]
-[ 🌐 Add Browser Link ]
-[ 🔑 Create User Password ]
-[ 🗑 Remove User Password ]
+[ 📤 Upload Direct File ] [ 🌐 Add Browser Link ]
+[ 📥 Direct Files ] [ 🌐 Browser Links ]
+[ 🔑 Create User Password ] [ 🔍 Password List ]
+[ 🗑 Remove User Password ] [ 👥 Bot Users ]
 [ 🛠 Set Support ID ]
-[ 📥 Direct Files ]
-[ 🌐 Browser Links ]
 [ 🏠 Main Menu ]
 ```
 
@@ -319,6 +345,8 @@ Downloads: 12
 Uploaded: 2026-04-27
 
 [ 📥 Direct Download ]
+[ ✏️ Edit Details ]
+[ 🗑 Remove Direct File ]
 [ 📥 Direct Files ] [ 🏠 Main Menu ]
 ```
 

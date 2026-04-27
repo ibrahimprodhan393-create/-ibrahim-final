@@ -64,6 +64,7 @@ DATABASE_URL=your_neon_connection_string
 ADMIN_IDS=your_telegram_user_id
 WEBHOOK_SECRET=your_random_secret
 WEBHOOK_BASE_URL=https://your-service.onrender.com
+MONITOR_SECRET=your_monitor_secret
 PYTHON_VERSION=3.12.8
 DB_POOL_SIZE=2
 PAGE_SIZE=5

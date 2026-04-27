@@ -57,6 +57,7 @@ PROTECT_CONTENT = os.getenv("PROTECT_CONTENT") == "true"
 DROP_PENDING_UPDATES = os.getenv("DROP_PENDING_UPDATES") == "true"
 SKIP_WEBHOOK_SETUP = os.getenv("SKIP_WEBHOOK_SETUP") == "true"
 USER_PASSWORD_MIN_LENGTH = positive_int(os.getenv("USER_PASSWORD_MIN_LENGTH"), 6)
+MONITOR_SECRET = os.getenv("MONITOR_SECRET", WEBHOOK_SECRET)
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is required")
@@ -75,6 +76,15 @@ app = FastAPI()
 db_pool: asyncpg.Pool | None = None
 http_client: httpx.AsyncClient | None = None
 user_states: dict[int, str] = {}
+app_started_at = datetime.utcnow()
+monitoring: dict[str, Any] = {
+    "updates": 0,
+    "messages": 0,
+    "callbacks": 0,
+    "errors": 0,
+    "last_update_at": None,
+    "last_error": "",
+}
 
 
 @app.on_event("startup")
@@ -102,7 +112,28 @@ async def shutdown() -> None:
 
 @app.get("/healthz")
 async def healthz() -> dict[str, bool]:
-    return {"ok": True}
+    db_ok = await check_db_health()
+    return {"ok": True, "db_ok": db_ok}
+
+
+@app.get("/monitor/{secret}")
+async def monitor(secret: str) -> dict[str, Any]:
+    if secret != MONITOR_SECRET:
+        raise HTTPException(status_code=403, detail="invalid monitor secret")
+
+    now = datetime.utcnow()
+    db_ok = await check_db_health()
+    return {
+        "ok": db_ok,
+        "utc_now": now.isoformat(),
+        "uptime_seconds": int((now - app_started_at).total_seconds()),
+        "updates": monitoring["updates"],
+        "messages": monitoring["messages"],
+        "callbacks": monitoring["callbacks"],
+        "errors": monitoring["errors"],
+        "last_update_at": monitoring["last_update_at"],
+        "last_error": monitoring["last_error"],
+    }
 
 
 @app.post("/webhook/{secret}")
@@ -121,11 +152,17 @@ async def webhook(
 
 async def process_update(update: dict[str, Any]) -> None:
     try:
+        monitoring["updates"] += 1
+        monitoring["last_update_at"] = datetime.utcnow().isoformat()
         if "message" in update:
+            monitoring["messages"] += 1
             await handle_message(update["message"])
         if "callback_query" in update:
+            monitoring["callbacks"] += 1
             await handle_callback(update["callback_query"])
     except Exception as exc:
+        monitoring["errors"] += 1
+        monitoring["last_error"] = str(exc)
         print(f"Failed to process update: {exc}")
 
 
@@ -160,6 +197,10 @@ async def handle_message(message: dict[str, Any]) -> None:
 
     if state == "login_password":
         await handle_login_attempt(chat_id, user, text)
+        return
+
+    if state and state.startswith("editfile:"):
+        await handle_edit_file_details(chat_id, user, text, state)
         return
 
     media = media_from_message(message)
@@ -279,7 +320,7 @@ async def handle_callback(query: dict[str, Any]) -> None:
     if user.get("id"):
         await upsert_user(user)
 
-    if action not in {"search", "upload", "addlink", "setsupport", "createpass", "removepass", "login"}:
+    if action not in {"search", "upload", "addlink", "setsupport", "createpass", "removepass", "login", "editfile"}:
         user_states.pop(user.get("id"), None)
 
     if action == "menu":
@@ -312,6 +353,37 @@ async def handle_callback(query: dict[str, Any]) -> None:
             return
         await answer_callback(query["id"])
         await show_file_detail(chat_id, message_id, safe_int(raw_value), user)
+    elif action == "editfile":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        file_id = safe_int(raw_value)
+        file = await get_file(file_id)
+        if not file:
+            await answer_callback(query["id"], "File not found.", True)
+            await show_file_list(chat_id, message_id, 0, user)
+            return
+        user_states[user["id"]] = f"editfile:{file_id}"
+        await answer_callback(query["id"])
+        await edit_message(
+            chat_id,
+            message_id,
+            "\n".join(
+                [
+                    "Send new file details.",
+                    "",
+                    f"Current title: <b>{e(file['title'] or file['file_name'])}</b>",
+                    f"Current description: {e(file.get('description') or '-')}",
+                    "",
+                    "Formats:",
+                    "Title | Description",
+                    "| Description only",
+                    "Description only (without |)",
+                    "clear  (clear description)",
+                ]
+            ),
+            back_keyboard("menu"),
+        )
     elif action == "get":
         if not await user_has_access(user.get("id")):
             await deny_locked_callback(query["id"], chat_id, message_id)
@@ -605,7 +677,7 @@ def support_text(contact: str | None, admin: bool) -> str:
 
 
 def admin_panel_text() -> str:
-    return "🛠 Admin Panel\n\n📤 Upload Direct File adds Telegram files.\n🌐 Add Browser Link adds external download links.\n🔑 Create User Password adds a login password.\n🔍 Password List shows created password previews.\n🗑 Remove User Password disables a login password.\n👥 Bot Users shows everyone who used the bot.\n📥 Direct Files shows Telegram files.\n🌐 Browser Links shows external links.\n🛠 Set Support ID updates the support contact."
+    return "🛠 Admin Panel\n\n📤 Upload Direct File adds Telegram files.\n🌐 Add Browser Link adds external download links.\n✏️ Open any file and press Edit Details to update description later.\n🔑 Create User Password adds a login password.\n🔍 Password List shows created password previews.\n🗑 Remove User Password disables a login password.\n👥 Bot Users shows everyone who used the bot.\n📥 Direct Files shows Telegram files.\n🌐 Browser Links shows external links.\n🛠 Set Support ID updates the support contact."
 
 
 def upload_instructions() -> str:
@@ -658,6 +730,51 @@ async def handle_download_link_add(chat_id: int, user: dict[str, Any], text: str
         "\n".join(lines),
         reply_markup=link_saved_keyboard(saved["id"]),
     )
+
+
+async def handle_edit_file_details(chat_id: int, user: dict[str, Any], text: str, state: str) -> None:
+    if not is_admin(user.get("id")):
+        user_states.pop(user.get("id"), None)
+        await send_message(chat_id, "Admins only.", reply_markup=main_menu_keyboard(False, False))
+        return
+
+    _, _, file_id_raw = state.partition(":")
+    file_id = safe_int(file_id_raw)
+    if file_id <= 0:
+        user_states.pop(user.get("id"), None)
+        await send_message(chat_id, "Invalid edit session. Please open the file again.", reply_markup=admin_panel_keyboard())
+        return
+
+    file = await get_file(file_id)
+    if not file:
+        user_states.pop(user.get("id"), None)
+        await send_message(chat_id, "File not found.", reply_markup=admin_panel_keyboard())
+        return
+
+    parsed = parse_file_details_input(text, file["title"] or file["file_name"])
+    if not parsed:
+        await send_message(
+            chat_id,
+            "Invalid format.\n\nUse:\nTitle | Description\n| Description only\nDescription only\nclear",
+            reply_markup=cancel_keyboard(),
+        )
+        return
+
+    title, description = parsed
+    updated = await update_file_details(file_id, title, description)
+    user_states.pop(user.get("id"), None)
+
+    if not updated:
+        await send_message(chat_id, "File not found.", reply_markup=admin_panel_keyboard())
+        return
+
+    lines = [
+        "File details updated.",
+        "",
+        f"Title: <b>{e(updated['title'] or updated['file_name'])}</b>",
+        f"Description: {e(updated.get('description') or '-')}",
+    ]
+    await send_message(chat_id, "\n".join(lines), reply_markup=file_detail_keyboard(updated["id"], True))
 
 
 async def show_file_list(chat_id: int, message_id: int, page: int, user: dict[str, Any]) -> None:
@@ -851,15 +968,23 @@ def main_menu_keyboard(admin: bool, authorized: bool) -> dict[str, Any]:
 def admin_panel_keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
-            [{"text": "📤 Upload Direct File", "callback_data": "upload"}],
-            [{"text": "🌐 Add Browser Link", "callback_data": "addlink"}],
-            [{"text": "🔑 Create User Password", "callback_data": "createpass"}],
-            [{"text": "🔍 Password List", "callback_data": "passlist:0"}],
-            [{"text": "🗑 Remove User Password", "callback_data": "removepass"}],
-            [{"text": "👥 Bot Users", "callback_data": "users:0"}],
+            [
+                {"text": "📤 Upload Direct File", "callback_data": "upload"},
+                {"text": "🌐 Add Browser Link", "callback_data": "addlink"},
+            ],
+            [
+                {"text": "📥 Direct Files", "callback_data": "list:0"},
+                {"text": "🌐 Browser Links", "callback_data": "links:0"},
+            ],
+            [
+                {"text": "🔑 Create User Password", "callback_data": "createpass"},
+                {"text": "🔍 Password List", "callback_data": "passlist:0"},
+            ],
+            [
+                {"text": "🗑 Remove User Password", "callback_data": "removepass"},
+                {"text": "👥 Bot Users", "callback_data": "users:0"},
+            ],
             [{"text": "🛠 Set Support ID", "callback_data": "setsupport"}],
-            [{"text": "📥 Direct Files", "callback_data": "list:0"}],
-            [{"text": "🌐 Browser Links", "callback_data": "links:0"}],
             [{"text": "🏠 Main Menu", "callback_data": "menu"}],
         ]
     }
@@ -893,7 +1018,8 @@ def file_detail_keyboard(file_id: int, admin: bool) -> dict[str, Any]:
         [{"text": "📥 Direct Files", "callback_data": "list:0"}, {"text": "🏠 Main Menu", "callback_data": "menu"}],
     ]
     if admin:
-        rows.insert(1, [{"text": "🗑 Remove Direct File", "callback_data": f"del:{file_id}"}])
+        rows.insert(1, [{"text": "✏️ Edit Details", "callback_data": f"editfile:{file_id}"}])
+        rows.insert(2, [{"text": "🗑 Remove Direct File", "callback_data": f"del:{file_id}"}])
     return {"inline_keyboard": rows}
 
 
@@ -1124,6 +1250,17 @@ async def upsert_user(user: dict[str, Any]) -> None:
         )
 
 
+async def check_db_health() -> bool:
+    if not db_pool:
+        return False
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        return True
+    except Exception:
+        return False
+
+
 async def is_user_authorized(user_id: Any) -> bool:
     if not user_id:
         return False
@@ -1302,6 +1439,27 @@ async def save_download_link(link: dict[str, Any]) -> asyncpg.Record:
             link.get("description"),
             link["uploader_id"],
             link["uploader_name"],
+        )
+
+
+async def update_file_details(file_id: int, title: str, description: str) -> asyncpg.Record | None:
+    if file_id <= 0:
+        return None
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            UPDATE bot_files
+            SET title = $2,
+                description = $3,
+                updated_at = NOW()
+            WHERE id = $1
+              AND is_active = TRUE
+            RETURNING *
+            """,
+            file_id,
+            title,
+            description,
         )
 
 
@@ -1630,6 +1788,27 @@ def parse_file_caption(caption: Any, fallback_title: str) -> tuple[str, str]:
         description = clean_description(description_part)
         return title, description
     return clean_title(text), ""
+
+
+def parse_file_details_input(value: str, current_title: str) -> tuple[str, str] | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    title = clean_title(current_title) or "Untitled"
+
+    if text.lower() in {"clear", "-", "none"}:
+        return title, ""
+
+    if "|" in text:
+        left, right = text.split("|", 1)
+        parsed_title = clean_title(left)
+        if parsed_title:
+            title = parsed_title
+        description = clean_description(right)
+        return title, description
+
+    return title, clean_description(text)
 
 
 def parse_download_link_input(value: str) -> tuple[str, str, str] | None:

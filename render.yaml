@@ -18,6 +18,8 @@ services:
         sync: false
       - key: WEBHOOK_BASE_URL
         sync: false
+      - key: MONITOR_SECRET
+        sync: false
       - key: PYTHON_VERSION
         value: 3.12.8
       - key: PAGE_SIZE
