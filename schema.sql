@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS bot_files (
   file_size BIGINT,
   title TEXT,
   description TEXT,
+  section_no INTEGER NOT NULL DEFAULT 1,
   uploader_id BIGINT NOT NULL,
   uploader_name TEXT,
   download_count BIGINT NOT NULL DEFAULT 0,
@@ -19,6 +20,9 @@ CREATE TABLE IF NOT EXISTS bot_files (
 
 ALTER TABLE bot_files
   ADD COLUMN IF NOT EXISTS description TEXT;
+
+ALTER TABLE bot_files
+  ADD COLUMN IF NOT EXISTS section_no INTEGER NOT NULL DEFAULT 1;
 
 CREATE INDEX IF NOT EXISTS bot_files_active_created_idx
   ON bot_files (is_active, created_at DESC);

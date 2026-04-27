@@ -27,8 +27,11 @@ Official Telegram Bot API docs: https://core.telegram.org/bots/api
 - Admin-only browser download link add/remove
 - File and link description support during upload/add
 - Admin can edit existing direct-file description later
+- Admin can edit file name and section +/- from file details
+- Admin can edit existing browser link title/URL/description later
 - User direct Telegram file download
 - User browser download link buttons
+- Profile section -> File details -> File name -> Download flow
 - Separate Direct Download and Browser Download sections
 - English inline button UI with matching emojis
 - English bot messages
@@ -38,6 +41,7 @@ Official Telegram Bot API docs: https://core.telegram.org/bots/api
 - Passwords are stored as salted hashes, not plaintext
 - Admin password preview list (masked) inside Admin Panel
 - Admin bot user list with Telegram ID and last seen
+- Admin can lock/unlock user access from user details
 - Admin can remove/disable a user password later
 - Neon Postgres metadata storage
 - Render Free deploy support
@@ -189,6 +193,21 @@ https://example.com/file.zip
 
 The link will appear under `🌐 Browser Download`, and users can open it with a browser download button.
 
+To edit an existing browser link:
+
+1. Press `🌐 Browser Links`.
+2. Open a link.
+3. Press `✏️ Edit Link`.
+4. Send one of these:
+
+```text
+Title | https://example.com/file.zip | Description
+Title | https://example.com/file.zip
+https://example.com/file.zip | Description
+Description only
+clear
+```
+
 To edit description of an existing uploaded direct file:
 
 1. Press `📥 Direct Files`.
@@ -201,6 +220,19 @@ Title | Description
 | Description only
 Description only
 clear
+```
+
+To edit file name or section from file details:
+
+1. Press `📥 Direct Files`.
+2. Open a file.
+3. Use:
+
+```text
+📝 Edit File Name
+➖ Section
+➕ Section
+🗑 Remove Direct File
 ```
 
 To set the support contact:
@@ -247,12 +279,20 @@ To see all users who used the bot:
 
 The list shows user name/username, Telegram ID, access status, and last seen time.
 
+To lock or unlock a user:
+
+1. Press `👥 Bot Users`.
+2. Open any user.
+3. Press `🔒 Lock User` or `✅ Unlock User`.
+
 ## User Flow
 
 1. Press `🔐 Login`.
 2. Send the user password.
-3. Press `📥 Direct Download` to get Telegram files, or `🌐 Browser Download` to open saved links.
-4. Pick a direct file and press `📥 Direct Download`, or pick a browser link and press `🌐 Browser Download`.
+3. Open `👤 My Profile` (first section).
+4. Open `📂 File Details`.
+5. Pick a file name from `📥 Direct Files` or `🌐 Browser Links`.
+6. Open file details and press download.
 
 Users cannot upload files.
 
@@ -274,11 +314,10 @@ Logged-in user menu:
 ```text
 Welcome.
 
-Choose Direct Download for Telegram files or Browser Download for external links.
+Open My Profile first, then File Details to browse file names and download.
 
-[ 📥 Direct Download ]
-[ 🌐 Browser Download ]
-[ 🔎 Search ]
+[ 👤 My Profile ]
+[ 📂 File Details ]
 [ 🚪 Logout ]
 [ 💬 Support ]
 ```
@@ -288,11 +327,10 @@ Admin main menu:
 ```text
 Welcome.
 
-Choose Direct Download for Telegram files or Browser Download for external links.
+Open My Profile first, then File Details to browse file names and download.
 
-[ 📥 Direct Download ]
-[ 🌐 Browser Download ]
-[ 🔎 Search ]
+[ 👤 My Profile ]
+[ 📂 File Details ]
 [ 🛠 Admin Panel ]
 [ 💬 Support ]
 ```
@@ -304,7 +342,8 @@ Admin panel:
 
 📤 Upload Direct File adds Telegram files.
 🌐 Add Browser Link adds external download links.
-✏️ Open any file and press Edit Details to update description later.
+✏️ Open any file and press Edit File Name, Section +/- or Edit Details.
+✏️ Open any browser link and press Edit Link to update title/URL/description.
 🔑 Create User Password adds a login password.
 🔍 Password List shows created password previews.
 🗑 Remove User Password disables a login password.
@@ -345,7 +384,8 @@ Downloads: 12
 Uploaded: 2026-04-27
 
 [ 📥 Direct Download ]
-[ ✏️ Edit Details ]
+[ 📝 Edit File Name ] [ ✏️ Edit Details ]
+[ ➖ Section ] [ ➕ Section ]
 [ 🗑 Remove Direct File ]
 [ 📥 Direct Files ] [ 🏠 Main Menu ]
 ```
@@ -359,5 +399,7 @@ Link: https://example.com/movie.zip
 Added: 2026-04-27
 
 [ 🌐 Browser Download ]
+[ ✏️ Edit Link ]
+[ 🗑 Remove Browser Link ]
 [ 🌐 Browser Links ] [ 🏠 Main Menu ]
 ```
