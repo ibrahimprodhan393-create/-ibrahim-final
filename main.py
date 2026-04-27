@@ -195,6 +195,14 @@ async def handle_message(message: dict[str, Any]) -> None:
         await handle_remove_user_password(chat_id, user, text)
         return
 
+    if state == "new_section":
+        await handle_new_section(chat_id, user, text)
+        return
+
+    if state and state.startswith("rename_section:"):
+        await handle_rename_section(chat_id, user, text, state)
+        return
+
     if state == "login_password":
         await handle_login_attempt(chat_id, user, text)
         return
@@ -209,6 +217,25 @@ async def handle_message(message: dict[str, Any]) -> None:
 
     if state and state.startswith("editlink:"):
         await handle_edit_link_details(chat_id, user, text, state)
+        return
+
+    if state and state.startswith("upload:") and text:
+        section_id = parse_upload_state_section_id(state)
+        section = await get_section(section_id)
+        section_label = section["name"] if section else "selected section"
+        await send_message(
+            chat_id,
+            f"Please send a file for section <b>{e(section_label)}</b>.\n\nYou can send document, video, audio, or photo with optional caption:\nTitle\nTitle | Description",
+            reply_markup=cancel_keyboard(),
+        )
+        return
+
+    if state == "upload" and text:
+        await send_message(
+            chat_id,
+            "Please choose a section first from Admin Panel > Upload Direct File, then send the file.",
+            reply_markup=back_keyboard("admin"),
+        )
         return
 
     media = media_from_message(message)
@@ -269,6 +296,8 @@ async def handle_command(message: dict[str, Any], text: str) -> None:
 async def handle_media_upload(message: dict[str, Any], media: dict[str, Any]) -> None:
     chat_id = message["chat"]["id"]
     user = message.get("from", {})
+    state = user_states.get(user.get("id"))
+    section_id = parse_upload_state_section_id(state)
     user_states.pop(user.get("id"), None)
 
     if not is_admin(user.get("id")):
@@ -280,6 +309,7 @@ async def handle_media_upload(message: dict[str, Any], media: dict[str, Any]) ->
         )
         return
 
+    section = await resolve_upload_section(section_id, user.get("id"))
     title, description = parse_file_caption(message.get("caption"), media["file_name"])
     saved = await save_file(
         {
@@ -291,6 +321,7 @@ async def handle_media_upload(message: dict[str, Any], media: dict[str, Any]) ->
             "file_size": media.get("file_size"),
             "title": title,
             "description": description,
+            "section_id": section["id"],
             "uploader_id": user["id"],
             "uploader_name": display_name(user),
         }
@@ -302,6 +333,7 @@ async def handle_media_upload(message: dict[str, Any], media: dict[str, Any]) ->
         f"<b>{e(saved['title'] or saved['file_name'])}</b>",
         f"Size: {e(format_bytes(saved['file_size']))}",
         f"Type: {e(saved['kind'])}",
+        f"Section: {e(saved.get('section_name') or section['name'])}",
     ]
     if saved.get("description"):
         lines.append(f"Description: {e(saved['description'])}")
@@ -328,7 +360,20 @@ async def handle_callback(query: dict[str, Any]) -> None:
     if user.get("id"):
         await upsert_user(user)
 
-    if action not in {"search", "upload", "addlink", "setsupport", "createpass", "removepass", "login", "editfile", "editfname", "editlink"}:
+    if action not in {
+        "search",
+        "upload",
+        "addlink",
+        "setsupport",
+        "createpass",
+        "removepass",
+        "login",
+        "editfile",
+        "editfname",
+        "editlink",
+        "addsec",
+        "secrename",
+    }:
         user_states.pop(user.get("id"), None)
 
     if action == "menu":
@@ -346,6 +391,12 @@ async def handle_callback(query: dict[str, Any]) -> None:
             return
         await answer_callback(query["id"])
         await show_file_section(chat_id, message_id, user)
+    elif action == "sections":
+        if not await user_has_access(user.get("id")):
+            await deny_locked_callback(query["id"], chat_id, message_id)
+            return
+        await answer_callback(query["id"])
+        await show_section_list(chat_id, message_id, safe_int(raw_value), user)
     elif action == "support":
         await answer_callback(query["id"])
         await show_support(chat_id, message_id, is_admin(user.get("id")))
@@ -354,7 +405,18 @@ async def handle_callback(query: dict[str, Any]) -> None:
             await deny_locked_callback(query["id"], chat_id, message_id)
             return
         await answer_callback(query["id"])
-        await show_file_list(chat_id, message_id, safe_int(raw_value), user)
+        await show_file_list(chat_id, message_id, safe_int(raw_value), user, None)
+    elif action == "sfiles":
+        if not await user_has_access(user.get("id")):
+            await deny_locked_callback(query["id"], chat_id, message_id)
+            return
+        section_id, page = parse_target_page(raw_value)
+        if section_id <= 0:
+            await answer_callback(query["id"], "Section not found.", True)
+            await show_section_list(chat_id, message_id, 0, user)
+            return
+        await answer_callback(query["id"])
+        await show_file_list(chat_id, message_id, page, user, section_id)
     elif action == "links":
         if not await user_has_access(user.get("id")):
             await deny_locked_callback(query["id"], chat_id, message_id)
@@ -405,7 +467,17 @@ async def handle_callback(query: dict[str, Any]) -> None:
             await deny_locked_callback(query["id"], chat_id, message_id)
             return
         await answer_callback(query["id"])
-        await show_file_detail(chat_id, message_id, safe_int(raw_value), user)
+        await show_file_detail(chat_id, message_id, safe_int(raw_value), user, None)
+    elif action == "filein":
+        if not await user_has_access(user.get("id")):
+            await deny_locked_callback(query["id"], chat_id, message_id)
+            return
+        file_id, section_id = parse_target_page(raw_value)
+        if file_id <= 0:
+            await answer_callback(query["id"], "File not found.", True)
+            return
+        await answer_callback(query["id"])
+        await show_file_detail(chat_id, message_id, file_id, user, section_id)
     elif action == "editfile":
         if not is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins only.", True)
@@ -462,30 +534,57 @@ async def handle_callback(query: dict[str, Any]) -> None:
             ),
             back_keyboard("menu"),
         )
+    elif action == "fsec":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        file_id = safe_int(raw_value)
+        file = await get_file(file_id)
+        if not file:
+            await answer_callback(query["id"], "File not found.", True)
+            await show_file_list(chat_id, message_id, 0, user, None)
+            return
+        await answer_callback(query["id"])
+        await show_file_section_picker(chat_id, message_id, file)
+    elif action == "fsecset":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        file_id, section_id = parse_target_page(raw_value)
+        if file_id <= 0 or section_id <= 0:
+            await answer_callback(query["id"], "Invalid section request.", True)
+            return
+        updated = await update_file_section_id(file_id, section_id)
+        if not updated:
+            await answer_callback(query["id"], "File or section not found.", True)
+            await show_file_list(chat_id, message_id, 0, user, None)
+            return
+        await answer_callback(query["id"], "File section updated.")
+        await show_file_detail(chat_id, message_id, file_id, user, section_id)
     elif action == "secup":
         if not is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins only.", True)
             return
         file_id = safe_int(raw_value)
-        updated = await update_file_section(file_id, 1)
+        updated = await move_file_between_sections(file_id, 1)
         if not updated:
-            await answer_callback(query["id"], "File not found.", True)
-            await show_file_list(chat_id, message_id, 0, user)
+            await answer_callback(query["id"], "Cannot move file to next section.", True)
+            await show_file_list(chat_id, message_id, 0, user, None)
             return
-        await answer_callback(query["id"], "Section increased.")
-        await show_file_detail(chat_id, message_id, file_id, user)
+        await answer_callback(query["id"], "File moved to next section.")
+        await show_file_detail(chat_id, message_id, file_id, user, safe_int(updated.get("section_id")))
     elif action == "secdown":
         if not is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins only.", True)
             return
         file_id = safe_int(raw_value)
-        updated = await update_file_section(file_id, -1)
+        updated = await move_file_between_sections(file_id, -1)
         if not updated:
-            await answer_callback(query["id"], "File not found.", True)
-            await show_file_list(chat_id, message_id, 0, user)
+            await answer_callback(query["id"], "Cannot move file to previous section.", True)
+            await show_file_list(chat_id, message_id, 0, user, None)
             return
-        await answer_callback(query["id"], "Section decreased.")
-        await show_file_detail(chat_id, message_id, file_id, user)
+        await answer_callback(query["id"], "File moved to previous section.")
+        await show_file_detail(chat_id, message_id, file_id, user, safe_int(updated.get("section_id")))
     elif action == "get":
         if not await user_has_access(user.get("id")):
             await deny_locked_callback(query["id"], chat_id, message_id)
@@ -554,13 +653,145 @@ async def handle_callback(query: dict[str, Any]) -> None:
             return
         await answer_callback(query["id"])
         await show_password_list(chat_id, message_id, safe_int(raw_value), user)
+    elif action == "secadmin":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        await answer_callback(query["id"])
+        await show_section_admin_list(chat_id, message_id, safe_int(raw_value))
+    elif action == "sec":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        section_id, page = parse_target_page(raw_value)
+        if section_id <= 0:
+            await answer_callback(query["id"], "Section not found.", True)
+            await show_section_admin_list(chat_id, message_id, 0)
+            return
+        await answer_callback(query["id"])
+        await show_section_admin_detail(chat_id, message_id, section_id, page)
+    elif action == "addsec":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        user_states[user["id"]] = "new_section"
+        await answer_callback(query["id"])
+        await edit_message(
+            chat_id,
+            message_id,
+            "Send the new section name.\n\nExample: Movies, Tutorials, Software, Season 1",
+            back_keyboard("admin"),
+        )
+    elif action == "secrename":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        section_id, page = parse_target_page(raw_value)
+        section = await get_section(section_id)
+        if not section:
+            await answer_callback(query["id"], "Section not found.", True)
+            await show_section_admin_list(chat_id, message_id, page)
+            return
+        user_states[user["id"]] = f"rename_section:{section_id}|{page}"
+        await answer_callback(query["id"])
+        await edit_message(
+            chat_id,
+            message_id,
+            f"Send the new name for section <b>{e(section['name'])}</b>.",
+            back_keyboard(f"sec:{section_id}|{page}"),
+        )
+    elif action == "sorderup":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        section_id, page = parse_target_page(raw_value)
+        moved = await move_section_order(section_id, -1, user.get("id"))
+        if not moved:
+            await answer_callback(query["id"], "Already at top or section missing.", True)
+            await show_section_admin_detail(chat_id, message_id, section_id, page)
+            return
+        await answer_callback(query["id"], "Section moved up.")
+        await show_section_admin_detail(chat_id, message_id, section_id, page)
+    elif action == "sorderdown":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        section_id, page = parse_target_page(raw_value)
+        moved = await move_section_order(section_id, 1, user.get("id"))
+        if not moved:
+            await answer_callback(query["id"], "Already at bottom or section missing.", True)
+            await show_section_admin_detail(chat_id, message_id, section_id, page)
+            return
+        await answer_callback(query["id"], "Section moved down.")
+        await show_section_admin_detail(chat_id, message_id, section_id, page)
+    elif action == "secremove":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        section_id, page = parse_target_page(raw_value)
+        section = await get_section(section_id)
+        if not section:
+            await answer_callback(query["id"], "Section not found.", True)
+            await show_section_admin_list(chat_id, message_id, page)
+            return
+        await answer_callback(query["id"])
+        await edit_message(
+            chat_id,
+            message_id,
+            f"Remove section <b>{e(section['name'])}</b>?\n\nThis works only if the section has no active files.",
+            delete_section_confirm_keyboard(section_id, page),
+        )
+    elif action == "secremoveok":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        section_id, page = parse_target_page(raw_value)
+        ok, reason = await deactivate_section(section_id, user.get("id"))
+        if not ok:
+            message_text = {
+                "has_files": "This section has files. Move or remove files first.",
+                "last_section": "At least one active section is required.",
+            }.get(reason, "Section not found.")
+            await answer_callback(query["id"], message_text, True)
+            if reason == "missing":
+                await show_section_admin_list(chat_id, message_id, page)
+            else:
+                await show_section_admin_detail(chat_id, message_id, section_id, page)
+            return
+        await answer_callback(query["id"], "Section removed.")
+        await show_section_admin_list(chat_id, message_id, page)
     elif action == "upload":
         if not is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins only.", True)
             return
-        user_states[user["id"]] = "upload"
         await answer_callback(query["id"])
-        await edit_message(chat_id, message_id, upload_instructions(), back_keyboard("admin"))
+        await show_upload_picker(chat_id, message_id)
+    elif action == "uploadpick":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        section_id = safe_int(raw_value)
+        section = await get_section(section_id)
+        if not section:
+            await answer_callback(query["id"], "Section not found.", True)
+            await show_upload_picker(chat_id, message_id)
+            return
+        user_states[user["id"]] = f"upload:{section_id}"
+        await answer_callback(query["id"])
+        await edit_message(chat_id, message_id, upload_instructions(section["name"]), back_keyboard("admin"))
+    elif action == "uploadsec":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        section_id, page = parse_target_page(raw_value)
+        section = await get_section(section_id)
+        if not section:
+            await answer_callback(query["id"], "Section not found.", True)
+            await show_section_admin_list(chat_id, message_id, page)
+            return
+        user_states[user["id"]] = f"upload:{section_id}"
+        await answer_callback(query["id"])
+        await edit_message(chat_id, message_id, upload_instructions(section["name"]), back_keyboard(f"sec:{section_id}|{page}"))
     elif action == "addlink":
         if not is_admin(user.get("id")):
             await answer_callback(query["id"], "Admins only.", True)
@@ -660,6 +891,111 @@ async def show_file_section(chat_id: int, message_id: int, user: dict[str, Any])
     await edit_message(chat_id, message_id, file_section_text(), file_section_keyboard(is_admin(user.get("id"))))
 
 
+async def show_section_list(chat_id: int, message_id: int, page: int, user: dict[str, Any]) -> None:
+    page = max(0, page)
+    sections, total = await list_sections(page, PAGE_SIZE)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    if page >= total_pages:
+        await show_section_list(chat_id, message_id, total_pages - 1, user)
+        return
+
+    if not sections:
+        await edit_message(chat_id, message_id, "No sections found yet.", file_section_keyboard(is_admin(user.get("id"))))
+        return
+
+    lines = [f"<b>🗂 Sections</b>", f"Page {page + 1}/{total_pages}", ""]
+    for index, section in enumerate(sections, start=page * PAGE_SIZE + 1):
+        lines.append(f"{index}. {e(section['name'])}  ({e(section['file_count'])} files)")
+
+    await edit_message(
+        chat_id,
+        message_id,
+        "\n".join(lines),
+        section_list_keyboard(sections, page, total_pages, is_admin(user.get("id"))),
+    )
+
+
+async def show_section_admin_list(chat_id: int, message_id: int, page: int) -> None:
+    page = max(0, page)
+    sections, total = await list_sections(page, PAGE_SIZE)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    if page >= total_pages:
+        await show_section_admin_list(chat_id, message_id, total_pages - 1)
+        return
+
+    lines = [f"<b>🗂 Section Manager</b>", f"Page {page + 1}/{total_pages}", ""]
+    if not sections:
+        lines.append("No sections available.")
+    else:
+        for index, section in enumerate(sections, start=page * PAGE_SIZE + 1):
+            lines.append(
+                f"{index}. {e(section['name'])} | Order: {e(section['sort_order'])} | Files: {e(section['file_count'])}"
+            )
+
+    lines += [
+        "",
+        "Open a section to rename, move up/down, remove, or upload files inside it.",
+    ]
+    await edit_message(chat_id, message_id, "\n".join(lines), section_admin_list_keyboard(sections, page, total_pages))
+
+
+async def show_section_admin_detail(chat_id: int, message_id: int, section_id: int, page: int) -> None:
+    section = await get_section_with_count(section_id)
+    if not section:
+        await edit_message(chat_id, message_id, "Section not found.", back_keyboard("admin"))
+        return
+
+    lines = [
+        "<b>🗂 Section Details</b>",
+        "",
+        f"Name: <b>{e(section['name'])}</b>",
+        f"Order: {e(section['sort_order'])}",
+        f"Files: {e(section['file_count'])}",
+        f"Created: {e(format_date(section['created_at']))}",
+    ]
+    await edit_message(chat_id, message_id, "\n".join(lines), section_admin_detail_keyboard(section, page))
+
+
+async def show_upload_picker(chat_id: int, message_id: int) -> None:
+    sections = await list_all_sections()
+    if not sections:
+        await edit_message(
+            chat_id,
+            message_id,
+            "No section is available. Create a section first from Section Manager.",
+            back_keyboard("admin"),
+        )
+        return
+
+    await edit_message(
+        chat_id,
+        message_id,
+        "Select a section where you want to upload the direct file.",
+        upload_section_keyboard(sections),
+    )
+
+
+async def show_file_section_picker(chat_id: int, message_id: int, file: asyncpg.Record) -> None:
+    sections = await list_all_sections()
+    if not sections:
+        await edit_message(chat_id, message_id, "No section found.", back_keyboard("admin"))
+        return
+
+    await edit_message(
+        chat_id,
+        message_id,
+        "\n".join(
+            [
+                f"<b>🗂 Change File Section</b>",
+                "",
+                f"File: <b>{e(file['title'] or file['file_name'])}</b>",
+                "Choose the destination section.",
+            ]
+        ),
+        file_section_picker_keyboard(file["id"], sections),
+    )
+
+
 def main_menu_text(user: dict[str, Any], authorized: bool = True) -> str:
     name = f", {e(user.get('first_name'))}" if user.get("first_name") else ""
     if not authorized:
@@ -691,8 +1027,8 @@ def file_section_text() -> str:
         [
             "<b>📂 File Details</b>",
             "",
-            "Choose a file category to see file names.",
-            "Open a file to see file details, then press download.",
+            "Open Sections to browse files by your custom categories.",
+            "Then open file details and press direct download.",
         ]
     )
 
@@ -787,6 +1123,68 @@ async def handle_remove_user_password(chat_id: int, user: dict[str, Any], passwo
     )
 
 
+async def handle_new_section(chat_id: int, user: dict[str, Any], text: str) -> None:
+    if not is_admin(user.get("id")):
+        user_states.pop(user.get("id"), None)
+        await send_message(chat_id, "Admins only.", reply_markup=main_menu_keyboard(False, False))
+        return
+
+    name = clean_section_name(text)
+    if not name:
+        await send_message(chat_id, "Please send a valid section name.", reply_markup=cancel_keyboard())
+        return
+
+    created, reason = await create_section(name, user.get("id"))
+    if not created:
+        if reason == "duplicate":
+            await send_message(chat_id, "This section name already exists.", reply_markup=cancel_keyboard())
+            return
+        await send_message(chat_id, "Could not create section.", reply_markup=admin_panel_keyboard())
+        return
+
+    user_states.pop(user.get("id"), None)
+    await send_message(
+        chat_id,
+        f"Section created successfully.\n\n<b>{e(created['name'])}</b>",
+        reply_markup=admin_panel_keyboard(),
+    )
+
+
+async def handle_rename_section(chat_id: int, user: dict[str, Any], text: str, state: str) -> None:
+    if not is_admin(user.get("id")):
+        user_states.pop(user.get("id"), None)
+        await send_message(chat_id, "Admins only.", reply_markup=main_menu_keyboard(False, False))
+        return
+
+    _, _, raw = state.partition(":")
+    section_id, _ = parse_target_page(raw)
+    if section_id <= 0:
+        user_states.pop(user.get("id"), None)
+        await send_message(chat_id, "Invalid section session.", reply_markup=admin_panel_keyboard())
+        return
+
+    name = clean_section_name(text)
+    if not name:
+        await send_message(chat_id, "Please send a valid section name.", reply_markup=cancel_keyboard())
+        return
+
+    updated, reason = await rename_section(section_id, name, user.get("id"))
+    if not updated:
+        if reason == "duplicate":
+            await send_message(chat_id, "This section name already exists.", reply_markup=cancel_keyboard())
+            return
+        user_states.pop(user.get("id"), None)
+        await send_message(chat_id, "Section not found.", reply_markup=admin_panel_keyboard())
+        return
+
+    user_states.pop(user.get("id"), None)
+    await send_message(
+        chat_id,
+        f"Section updated:\n<b>{e(updated['name'])}</b>",
+        reply_markup=admin_panel_keyboard(),
+    )
+
+
 async def send_support(chat_id: int, admin: bool) -> None:
     contact = await get_support_contact()
     await send_message(chat_id, support_text(contact, admin), reply_markup=support_keyboard(contact))
@@ -843,12 +1241,25 @@ def support_text(contact: str | None, admin: bool) -> str:
 
 
 def admin_panel_text() -> str:
-    return "🛠 Admin Panel\n\n📤 Upload Direct File adds Telegram files.\n🌐 Add Browser Link adds external download links.\n✏️ In file details you can edit file name, section +/- and description.\n✏️ Open any browser link and press Edit Link to update title/URL/description.\n🔑 Create User Password adds a login password.\n🔍 Password List shows created password previews.\n🗑 Remove User Password disables a login password.\n👥 Bot Users lets you lock or unlock user access.\n📥 Direct Files shows Telegram files.\n🌐 Browser Links shows external links.\n🛠 Set Support ID updates the support contact."
+    return (
+        "🛠 Admin Panel\n\n"
+        "📤 Upload Direct File: pick a section and upload Telegram file.\n"
+        "🗂 Manage Sections: create, rename, move, remove, and upload inside sections.\n"
+        "🌐 Add Browser Link: add external download links.\n"
+        "✏️ File details: edit file name, description, and change section.\n"
+        "✏️ Link details: edit title, URL, and description.\n"
+        "🔑 Create User Password: generate login password.\n"
+        "🔍 Password List: view password previews.\n"
+        "🗑 Remove User Password: disable password.\n"
+        "👥 Bot Users: lock or unlock users.\n"
+        "🛠 Set Support ID: update support contact."
+    )
 
 
-def upload_instructions() -> str:
+def upload_instructions(section_name: str) -> str:
     return (
         "<b>📤 Upload Direct File</b>\n\n"
+        f"Selected section: <b>{e(section_name)}</b>\n\n"
         "Send a document, video, audio, or photo in this chat.\n"
         "Caption formats:\n"
         "Title\n"
@@ -940,7 +1351,11 @@ async def handle_edit_file_details(chat_id: int, user: dict[str, Any], text: str
         f"Title: <b>{e(updated['title'] or updated['file_name'])}</b>",
         f"Description: {e(updated.get('description') or '-')}",
     ]
-    await send_message(chat_id, "\n".join(lines), reply_markup=file_detail_keyboard(updated["id"], True))
+    await send_message(
+        chat_id,
+        "\n".join(lines),
+        reply_markup=file_detail_keyboard(updated["id"], True, safe_int(updated.get("section_id"))),
+    )
 
 
 async def handle_edit_file_name(chat_id: int, user: dict[str, Any], text: str, state: str) -> None:
@@ -971,9 +1386,13 @@ async def handle_edit_file_name(chat_id: int, user: dict[str, Any], text: str, s
         "File name updated.",
         "",
         f"File name: <b>{e(updated['file_name'])}</b>",
-        f"Section: {e(updated.get('section_no') or 1)}",
+        f"Section: {e(updated.get('section_name') or ('Section ' + str(updated.get('section_no') or 1)))}",
     ]
-    await send_message(chat_id, "\n".join(lines), reply_markup=file_detail_keyboard(updated["id"], True))
+    await send_message(
+        chat_id,
+        "\n".join(lines),
+        reply_markup=file_detail_keyboard(updated["id"], True, safe_int(updated.get("section_id"))),
+    )
 
 
 async def handle_edit_link_details(chat_id: int, user: dict[str, Any], text: str, state: str) -> None:
@@ -1022,38 +1441,64 @@ async def handle_edit_link_details(chat_id: int, user: dict[str, Any], text: str
     await send_message(chat_id, "\n".join(lines), reply_markup=link_detail_keyboard(updated, True))
 
 
-async def show_file_list(chat_id: int, message_id: int, page: int, user: dict[str, Any]) -> None:
+async def show_file_list(
+    chat_id: int,
+    message_id: int,
+    page: int,
+    user: dict[str, Any],
+    section_id: int | None = None,
+) -> None:
     page = max(0, page)
-    files, total = await list_files(page, PAGE_SIZE)
+    files, total = await list_files(page, PAGE_SIZE, section_id)
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
 
     if page >= total_pages:
-        await show_file_list(chat_id, message_id, total_pages - 1, user)
+        await show_file_list(chat_id, message_id, total_pages - 1, user, section_id)
         return
+
+    section = await get_section(section_id) if section_id else None
+    section_name = section["name"] if section else ""
 
     if not files:
-        await edit_message(chat_id, message_id, "No direct download files have been uploaded yet.", back_keyboard())
+        if section:
+            await edit_message(
+                chat_id,
+                message_id,
+                f"No direct files found in section <b>{e(section_name)}</b>.",
+                section_empty_keyboard(section_id, is_admin(user.get("id"))),
+            )
+        else:
+            await edit_message(chat_id, message_id, "No direct download files have been uploaded yet.", back_keyboard())
         return
 
-    lines = [f"<b>📥 Direct Download Files</b>", f"Page {page + 1}/{total_pages}", ""]
+    title = f"<b>🗂 {e(section_name)} - Direct Files</b>" if section else "<b>📥 Direct Download Files</b>"
+    lines = [title, f"Page {page + 1}/{total_pages}", ""]
     for index, file in enumerate(files, start=page * PAGE_SIZE + 1):
-        lines.append(
-            f"{index}. [S{e(file.get('section_no') or 1)}] {e(file['title'] or file['file_name'])} ({e(format_bytes(file['file_size']))})"
-        )
-    await edit_message(chat_id, message_id, "\n".join(lines), file_list_keyboard(files, page, total_pages))
+        file_section = file.get("section_name") or f"Section {file.get('section_no') or 1}"
+        lines.append(f"{index}. [{e(file_section)}] {e(file['title'] or file['file_name'])} ({e(format_bytes(file['file_size']))})")
+    await edit_message(chat_id, message_id, "\n".join(lines), file_list_keyboard(files, page, total_pages, section_id))
 
 
-async def show_file_detail(chat_id: int, message_id: int, file_id: int, user: dict[str, Any]) -> None:
+async def show_file_detail(
+    chat_id: int,
+    message_id: int,
+    file_id: int,
+    user: dict[str, Any],
+    section_context_id: int | None = None,
+) -> None:
     file = await get_file(file_id)
     if not file:
         await edit_message(chat_id, message_id, "File not found.", back_keyboard())
         return
 
+    section_id = safe_int(file.get("section_id")) or section_context_id
+    section_label = file.get("section_name") or f"Section {file.get('section_no') or 1}"
+
     lines = [
         f"<b>📥 {e(file['title'] or file['file_name'])}</b>",
         "",
         f"File name: {e(file['file_name'])}",
-        f"Section: {e(file.get('section_no') or 1)}",
+        f"Section: {e(section_label)}",
         f"Size: {e(format_bytes(file['file_size']))}",
         f"Type: {e(file['kind'])}",
         f"Downloads: {e(file['download_count'])}",
@@ -1061,7 +1506,12 @@ async def show_file_detail(chat_id: int, message_id: int, file_id: int, user: di
     ]
     if file.get("description"):
         lines.insert(4, f"Description: {e(file['description'])}")
-    await edit_message(chat_id, message_id, "\n".join(lines), file_detail_keyboard(file["id"], is_admin(user.get("id"))))
+    await edit_message(
+        chat_id,
+        message_id,
+        "\n".join(lines),
+        file_detail_keyboard(file["id"], is_admin(user.get("id")), section_id),
+    )
 
 
 async def show_link_list(chat_id: int, message_id: int, page: int, user: dict[str, Any]) -> None:
@@ -1256,12 +1706,16 @@ def profile_keyboard() -> dict[str, Any]:
 def file_section_keyboard(admin: bool) -> dict[str, Any]:
     rows = [
         [
-            {"text": "📥 Direct Files", "callback_data": "list:0"},
+            {"text": "🗂 Sections", "callback_data": "sections:0"},
             {"text": "🌐 Browser Links", "callback_data": "links:0"},
         ],
-        [{"text": "🔎 Search", "callback_data": "search"}],
+        [
+            {"text": "📥 All Direct Files", "callback_data": "list:0"},
+            {"text": "🔎 Search", "callback_data": "search"},
+        ],
     ]
     if admin:
+        rows.append([{"text": "🗂 Manage Sections", "callback_data": "secadmin:0"}])
         rows.append([{"text": "🛠 Admin Panel", "callback_data": "admin"}])
     rows.append([{"text": "🏠 Main Menu", "callback_data": "menu"}])
     return {"inline_keyboard": rows}
@@ -1272,11 +1726,15 @@ def admin_panel_keyboard() -> dict[str, Any]:
         "inline_keyboard": [
             [
                 {"text": "📤 Upload Direct File", "callback_data": "upload"},
-                {"text": "🌐 Add Browser Link", "callback_data": "addlink"},
+                {"text": "🗂 Manage Sections", "callback_data": "secadmin:0"},
             ],
             [
                 {"text": "📥 Direct Files", "callback_data": "list:0"},
                 {"text": "🌐 Browser Links", "callback_data": "links:0"},
+            ],
+            [
+                {"text": "🌐 Add Browser Link", "callback_data": "addlink"},
+                {"text": "👥 Bot Users", "callback_data": "users:0"},
             ],
             [
                 {"text": "🔑 Create User Password", "callback_data": "createpass"},
@@ -1284,9 +1742,8 @@ def admin_panel_keyboard() -> dict[str, Any]:
             ],
             [
                 {"text": "🗑 Remove User Password", "callback_data": "removepass"},
-                {"text": "👥 Bot Users", "callback_data": "users:0"},
+                {"text": "🛠 Set Support ID", "callback_data": "setsupport"},
             ],
-            [{"text": "🛠 Set Support ID", "callback_data": "setsupport"}],
             [{"text": "🏠 Main Menu", "callback_data": "menu"}],
         ]
     }
@@ -1300,43 +1757,137 @@ def link_saved_keyboard(link_id: int) -> dict[str, Any]:
     return {"inline_keyboard": [[{"text": "🌐 View Browser Link", "callback_data": f"link:{link_id}"}], [{"text": "🛠 Admin Panel", "callback_data": "admin"}]]}
 
 
-def file_list_keyboard(files: list[asyncpg.Record], page: int, total_pages: int) -> dict[str, Any]:
-    rows = [[{"text": f"📄 {trim_button(file['title'] or file['file_name'])}", "callback_data": f"file:{file['id']}"}] for file in files]
+def file_list_keyboard(
+    files: list[asyncpg.Record],
+    page: int,
+    total_pages: int,
+    section_id: int | None = None,
+) -> dict[str, Any]:
+    rows = []
+    for file in files:
+        callback = f"filein:{file['id']}|{section_id}" if section_id else f"file:{file['id']}"
+        rows.append([{"text": f"📄 {trim_button(file['title'] or file['file_name'])}", "callback_data": callback}])
+
     nav = []
     if page > 0:
-        nav.append({"text": "⬅️ Previous", "callback_data": f"list:{page - 1}"})
+        nav_target = f"sfiles:{section_id}|{page - 1}" if section_id else f"list:{page - 1}"
+        nav.append({"text": "⬅️ Previous", "callback_data": nav_target})
     if page + 1 < total_pages:
-        nav.append({"text": "Next ➡️", "callback_data": f"list:{page + 1}"})
+        nav_target = f"sfiles:{section_id}|{page + 1}" if section_id else f"list:{page + 1}"
+        nav.append({"text": "Next ➡️", "callback_data": nav_target})
     if nav:
         rows.append(nav)
-    rows.append([{"text": "📂 File Details", "callback_data": "filesec"}])
+    if section_id:
+        rows.append([{"text": "🗂 Sections", "callback_data": "sections:0"}, {"text": "📥 All Direct Files", "callback_data": "list:0"}])
+    else:
+        rows.append([{"text": "📂 File Details", "callback_data": "filesec"}])
     rows.append([{"text": "🔎 Search", "callback_data": "search"}, {"text": "🏠 Main Menu", "callback_data": "menu"}])
     return {"inline_keyboard": rows}
 
 
-def file_detail_keyboard(file_id: int, admin: bool) -> dict[str, Any]:
+def file_detail_keyboard(file_id: int, admin: bool, section_id: int | None = None) -> dict[str, Any]:
     rows = [
         [{"text": "📥 Direct Download", "callback_data": f"get:{file_id}"}],
-        [{"text": "📥 Direct Files", "callback_data": "list:0"}, {"text": "📂 File Details", "callback_data": "filesec"}],
-        [{"text": "🏠 Main Menu", "callback_data": "menu"}],
     ]
     if admin:
-        rows.insert(
-            1,
+        rows.append(
             [
                 {"text": "📝 Edit File Name", "callback_data": f"editfname:{file_id}"},
                 {"text": "✏️ Edit Details", "callback_data": f"editfile:{file_id}"},
-            ],
+            ]
         )
-        rows.insert(
-            2,
-            [
-                {"text": "➖ Section", "callback_data": f"secdown:{file_id}"},
-                {"text": "➕ Section", "callback_data": f"secup:{file_id}"},
-            ],
-        )
-        rows.insert(3, [{"text": "🗑 Remove Direct File", "callback_data": f"del:{file_id}"}])
+        rows.append([{"text": "🗂 Change Section", "callback_data": f"fsec:{file_id}"}])
+        rows.append([{"text": "🗑 Remove Direct File", "callback_data": f"del:{file_id}"}])
+
+    if section_id:
+        rows.append([{"text": "🗂 Section Files", "callback_data": f"sfiles:{section_id}|0"}, {"text": "📥 All Direct Files", "callback_data": "list:0"}])
+    else:
+        rows.append([{"text": "📥 Direct Files", "callback_data": "list:0"}, {"text": "📂 File Details", "callback_data": "filesec"}])
+    rows.append([{"text": "🏠 Main Menu", "callback_data": "menu"}])
     return {"inline_keyboard": rows}
+
+
+def section_list_keyboard(
+    sections: list[asyncpg.Record],
+    page: int,
+    total_pages: int,
+    admin: bool,
+) -> dict[str, Any]:
+    rows = [[{"text": f"🗂 {trim_button(section['name'])}", "callback_data": f"sfiles:{section['id']}|0"}] for section in sections]
+    nav = []
+    if page > 0:
+        nav.append({"text": "⬅️ Previous", "callback_data": f"sections:{page - 1}"})
+    if page + 1 < total_pages:
+        nav.append({"text": "Next ➡️", "callback_data": f"sections:{page + 1}"})
+    if nav:
+        rows.append(nav)
+
+    if admin:
+        rows.append([{"text": "🗂 Manage Sections", "callback_data": "secadmin:0"}])
+    rows.append([{"text": "📂 File Details", "callback_data": "filesec"}, {"text": "🏠 Main Menu", "callback_data": "menu"}])
+    return {"inline_keyboard": rows}
+
+
+def section_admin_list_keyboard(sections: list[asyncpg.Record], page: int, total_pages: int) -> dict[str, Any]:
+    rows = [[{"text": f"🗂 {trim_button(section['name'])}", "callback_data": f"sec:{section['id']}|{page}"}] for section in sections]
+    nav = []
+    if page > 0:
+        nav.append({"text": "⬅️ Previous", "callback_data": f"secadmin:{page - 1}"})
+    if page + 1 < total_pages:
+        nav.append({"text": "Next ➡️", "callback_data": f"secadmin:{page + 1}"})
+    if nav:
+        rows.append(nav)
+    rows.append([{"text": "➕ Add Section", "callback_data": "addsec"}, {"text": "📤 Upload File", "callback_data": "upload"}])
+    rows.append([{"text": "🛠 Admin Panel", "callback_data": "admin"}])
+    return {"inline_keyboard": rows}
+
+
+def section_admin_detail_keyboard(section: asyncpg.Record, page: int) -> dict[str, Any]:
+    section_id = safe_int(section["id"])
+    rows = [
+        [
+            {"text": "✏️ Rename", "callback_data": f"secrename:{section_id}|{page}"},
+            {"text": "📤 Upload Here", "callback_data": f"uploadsec:{section_id}|{page}"},
+        ],
+        [
+            {"text": "⬆️ Move Up", "callback_data": f"sorderup:{section_id}|{page}"},
+            {"text": "⬇️ Move Down", "callback_data": f"sorderdown:{section_id}|{page}"},
+        ],
+        [{"text": "🗑 Remove Section", "callback_data": f"secremove:{section_id}|{page}"}],
+        [{"text": "📥 View Files", "callback_data": f"sfiles:{section_id}|0"}],
+        [{"text": "🗂 Section Manager", "callback_data": f"secadmin:{page}"}],
+    ]
+    return {"inline_keyboard": rows}
+
+
+def upload_section_keyboard(sections: list[asyncpg.Record]) -> dict[str, Any]:
+    rows = [[{"text": f"📂 {trim_button(section['name'])}", "callback_data": f"uploadpick:{section['id']}"}] for section in sections]
+    rows.append([{"text": "🗂 Manage Sections", "callback_data": "secadmin:0"}])
+    rows.append([{"text": "🛠 Admin Panel", "callback_data": "admin"}])
+    return {"inline_keyboard": rows}
+
+
+def file_section_picker_keyboard(file_id: int, sections: list[asyncpg.Record]) -> dict[str, Any]:
+    rows = [[{"text": f"🗂 {trim_button(section['name'])}", "callback_data": f"fsecset:{file_id}|{section['id']}"}] for section in sections]
+    rows.append([{"text": "↩️ Back to File", "callback_data": f"file:{file_id}"}])
+    return {"inline_keyboard": rows}
+
+
+def section_empty_keyboard(section_id: int, admin: bool) -> dict[str, Any]:
+    rows = [[{"text": "🗂 Sections", "callback_data": "sections:0"}, {"text": "📥 All Direct Files", "callback_data": "list:0"}]]
+    if admin:
+        rows.append([{"text": "📤 Upload Here", "callback_data": f"uploadpick:{section_id}"}])
+    rows.append([{"text": "🏠 Main Menu", "callback_data": "menu"}])
+    return {"inline_keyboard": rows}
+
+
+def delete_section_confirm_keyboard(section_id: int, page: int) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "✅ Yes, Remove", "callback_data": f"secremoveok:{section_id}|{page}"}],
+            [{"text": "↩️ Cancel", "callback_data": f"sec:{section_id}|{page}"}],
+        ]
+    }
 
 
 def link_list_keyboard(links: list[asyncpg.Record], page: int, total_pages: int) -> dict[str, Any]:
@@ -1459,6 +2010,23 @@ async def migrate() -> None:
     async with db_pool.acquire() as conn:
         await conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS bot_sections (
+              id BIGSERIAL PRIMARY KEY,
+              name TEXT NOT NULL,
+              sort_order INTEGER NOT NULL DEFAULT 1,
+              is_active BOOLEAN NOT NULL DEFAULT TRUE,
+              created_by BIGINT,
+              updated_by BIGINT,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS bot_sections_active_order_idx
+              ON bot_sections (is_active, sort_order, id);
+
+            CREATE INDEX IF NOT EXISTS bot_sections_name_idx
+              ON bot_sections ((lower(name)));
+
             CREATE TABLE IF NOT EXISTS bot_files (
               id BIGSERIAL PRIMARY KEY,
               file_unique_id TEXT NOT NULL,
@@ -1470,6 +2038,7 @@ async def migrate() -> None:
               title TEXT,
               description TEXT,
               section_no INTEGER NOT NULL DEFAULT 1,
+              section_id BIGINT,
               uploader_id BIGINT NOT NULL,
               uploader_name TEXT,
               download_count BIGINT NOT NULL DEFAULT 0,
@@ -1484,6 +2053,22 @@ async def migrate() -> None:
 
             ALTER TABLE bot_files
               ADD COLUMN IF NOT EXISTS section_no INTEGER NOT NULL DEFAULT 1;
+
+            ALTER TABLE bot_files
+              ADD COLUMN IF NOT EXISTS section_id BIGINT;
+
+            DO $$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'bot_files_section_id_fkey'
+              ) THEN
+                ALTER TABLE bot_files
+                  ADD CONSTRAINT bot_files_section_id_fkey
+                  FOREIGN KEY (section_id) REFERENCES bot_sections(id);
+              END IF;
+            END $$;
 
             CREATE INDEX IF NOT EXISTS bot_files_active_created_idx
               ON bot_files (is_active, created_at DESC);
@@ -1567,6 +2152,98 @@ async def migrate() -> None:
               ON bot_user_passwords (is_active, created_at DESC);
             """
         )
+
+        await ensure_sections_seed_and_backfill(conn)
+
+
+async def ensure_sections_seed_and_backfill(conn: asyncpg.Connection) -> None:
+    section_id = await conn.fetchval(
+        """
+        SELECT id
+        FROM bot_sections
+        WHERE is_active = TRUE
+        ORDER BY sort_order ASC, id ASC
+        LIMIT 1
+        """
+    )
+    if not section_id:
+        section_id = await conn.fetchval(
+            """
+            INSERT INTO bot_sections (name, sort_order, created_by, updated_by)
+            VALUES ('General', 1, 0, 0)
+            RETURNING id
+            """
+        )
+
+    section_nos = await conn.fetch(
+        """
+        SELECT DISTINCT GREATEST(1, COALESCE(section_no, 1)) AS section_no
+        FROM bot_files
+        ORDER BY 1
+        """
+    )
+    for item in section_nos:
+        section_no = int(item["section_no"])
+        existing = await conn.fetchval(
+            """
+            SELECT id
+            FROM bot_sections
+            WHERE is_active = TRUE
+              AND sort_order = $1
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            section_no,
+        )
+        if not existing:
+            existing = await conn.fetchval(
+                """
+                INSERT INTO bot_sections (name, sort_order, created_by, updated_by)
+                VALUES ($1, $2, 0, 0)
+                RETURNING id
+                """,
+                f"Section {section_no}",
+                section_no,
+            )
+        await conn.execute(
+            """
+            UPDATE bot_files
+            SET section_id = $1
+            WHERE section_id IS NULL
+              AND GREATEST(1, COALESCE(section_no, 1)) = $2
+            """,
+            existing,
+            section_no,
+        )
+
+    default_section_id = await conn.fetchval(
+        """
+        SELECT id
+        FROM bot_sections
+        WHERE is_active = TRUE
+        ORDER BY sort_order ASC, id ASC
+        LIMIT 1
+        """
+    )
+    if default_section_id:
+        await conn.execute(
+            """
+            UPDATE bot_files
+            SET section_id = $1
+            WHERE section_id IS NULL
+            """,
+            default_section_id,
+        )
+        await conn.execute(
+            """
+            UPDATE bot_files AS f
+            SET section_no = COALESCE(s.sort_order, 1)
+            FROM bot_sections AS s
+            WHERE f.section_id = s.id
+            """
+        )
+
+    await normalize_section_orders_conn(conn)
 
 
 async def upsert_user(user: dict[str, Any]) -> None:
@@ -1737,9 +2414,13 @@ async def save_file(file: dict[str, Any]) -> asyncpg.Record:
             """
             INSERT INTO bot_files (
               file_unique_id, file_id, kind, file_name, mime_type, file_size,
-              title, description, uploader_id, uploader_name
+              title, description, section_no, section_id, uploader_id, uploader_name
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES (
+              $1, $2, $3, $4, $5, $6, $7, $8,
+              COALESCE((SELECT sort_order FROM bot_sections WHERE id = $9), 1),
+              $9, $10, $11
+            )
             ON CONFLICT (file_unique_id, kind)
             DO UPDATE SET
               file_id = EXCLUDED.file_id,
@@ -1748,11 +2429,14 @@ async def save_file(file: dict[str, Any]) -> asyncpg.Record:
               file_size = EXCLUDED.file_size,
               title = EXCLUDED.title,
               description = EXCLUDED.description,
+              section_no = EXCLUDED.section_no,
+              section_id = EXCLUDED.section_id,
               uploader_id = EXCLUDED.uploader_id,
               uploader_name = EXCLUDED.uploader_name,
               is_active = TRUE,
               updated_at = NOW()
-            RETURNING *
+            RETURNING *,
+              (SELECT name FROM bot_sections WHERE id = bot_files.section_id) AS section_name
             """,
             file["file_unique_id"],
             file["file_id"],
@@ -1762,6 +2446,7 @@ async def save_file(file: dict[str, Any]) -> asyncpg.Record:
             file.get("file_size"),
             file["title"],
             file.get("description"),
+            file["section_id"],
             file["uploader_id"],
             file["uploader_name"],
         )
@@ -1797,7 +2482,8 @@ async def update_file_details(file_id: int, title: str, description: str) -> asy
                 updated_at = NOW()
             WHERE id = $1
               AND is_active = TRUE
-            RETURNING *
+            RETURNING *,
+              (SELECT name FROM bot_sections WHERE id = bot_files.section_id) AS section_name
             """,
             file_id,
             title,
@@ -1818,30 +2504,95 @@ async def update_file_name(file_id: int, file_name: str) -> asyncpg.Record | Non
                 updated_at = NOW()
             WHERE id = $1
               AND is_active = TRUE
-            RETURNING *
+            RETURNING *,
+              (SELECT name FROM bot_sections WHERE id = bot_files.section_id) AS section_name
             """,
             file_id,
             file_name,
         )
 
 
-async def update_file_section(file_id: int, delta: int) -> asyncpg.Record | None:
-    if file_id <= 0:
+async def update_file_section_id(file_id: int, section_id: int) -> asyncpg.Record | None:
+    if file_id <= 0 or section_id <= 0:
         return None
     assert db_pool
     async with db_pool.acquire() as conn:
         return await conn.fetchrow(
             """
-            UPDATE bot_files
-            SET section_no = GREATEST(1, coalesce(section_no, 1) + $2),
+            WITH target AS (
+              SELECT id, sort_order
+              FROM bot_sections
+              WHERE id = $2
+                AND is_active = TRUE
+            )
+            UPDATE bot_files AS f
+            SET section_id = $2,
+                section_no = COALESCE((SELECT sort_order FROM target), section_no),
                 updated_at = NOW()
-            WHERE id = $1
-              AND is_active = TRUE
-            RETURNING *
+            WHERE f.id = $1
+              AND f.is_active = TRUE
+              AND EXISTS (SELECT 1 FROM target)
+            RETURNING f.*,
+              (SELECT name FROM bot_sections WHERE id = f.section_id) AS section_name
             """,
             file_id,
-            delta,
+            section_id,
         )
+
+
+async def move_file_between_sections(file_id: int, delta: int) -> asyncpg.Record | None:
+    if file_id <= 0 or delta == 0:
+        return None
+
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        file = await conn.fetchrow(
+            """
+            SELECT section_id
+            FROM bot_files
+            WHERE id = $1
+              AND is_active = TRUE
+            """,
+            file_id,
+        )
+        if not file:
+            return None
+
+        current_section_id = safe_int(file.get("section_id"))
+        if current_section_id <= 0:
+            current_section_id = await conn.fetchval(
+                """
+                SELECT id
+                FROM bot_sections
+                WHERE is_active = TRUE
+                ORDER BY sort_order ASC, id ASC
+                LIMIT 1
+                """
+            )
+            if not current_section_id:
+                return None
+
+        comparator = ">" if delta > 0 else "<"
+        direction = "ASC" if delta > 0 else "DESC"
+        next_section = await conn.fetchrow(
+            f"""
+            SELECT s.id
+            FROM bot_sections AS s
+            JOIN bot_sections AS cur ON cur.id = $1
+            WHERE s.is_active = TRUE
+              AND (
+                s.sort_order {comparator} cur.sort_order
+                OR (s.sort_order = cur.sort_order AND s.id {comparator} cur.id)
+              )
+            ORDER BY s.sort_order {direction}, s.id {direction}
+            LIMIT 1
+            """,
+            current_section_id,
+        )
+        if not next_section:
+            return None
+
+        return await update_file_section_id(file_id, safe_int(next_section["id"]))
 
 
 async def update_link_details(link_id: int, title: str, url: str, description: str) -> asyncpg.Record | None:
@@ -1867,21 +2618,35 @@ async def update_link_details(link_id: int, title: str, url: str, description: s
         )
 
 
-async def list_files(page: int, page_size: int) -> tuple[list[asyncpg.Record], int]:
+async def list_files(page: int, page_size: int, section_id: int | None = None) -> tuple[list[asyncpg.Record], int]:
     assert db_pool
     async with db_pool.acquire() as conn:
         files = await conn.fetch(
             """
-            SELECT *
-            FROM bot_files
-            WHERE is_active = TRUE
-            ORDER BY section_no ASC, created_at DESC
+            SELECT
+              f.*,
+              s.name AS section_name,
+              s.sort_order AS section_sort_order
+            FROM bot_files AS f
+            LEFT JOIN bot_sections AS s ON s.id = f.section_id
+            WHERE f.is_active = TRUE
+              AND ($3::BIGINT IS NULL OR f.section_id = $3)
+            ORDER BY COALESCE(s.sort_order, f.section_no, 1) ASC, f.created_at DESC
             LIMIT $1 OFFSET $2
             """,
             page_size,
             page * page_size,
+            section_id,
         )
-        total = await conn.fetchval("SELECT COUNT(*) FROM bot_files WHERE is_active = TRUE")
+        total = await conn.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM bot_files
+            WHERE is_active = TRUE
+              AND ($1::BIGINT IS NULL OR section_id = $1)
+            """,
+            section_id,
+        )
     return list(files), int(total or 0)
 
 
@@ -1943,18 +2708,21 @@ async def search_files(keyword: str, limit: int) -> list[asyncpg.Record]:
         return list(
             await conn.fetch(
                 """
-                SELECT *
-                FROM bot_files
-                WHERE is_active = TRUE
+                SELECT
+                  f.*,
+                  s.name AS section_name
+                FROM bot_files AS f
+                LEFT JOIN bot_sections AS s ON s.id = f.section_id
+                WHERE f.is_active = TRUE
                   AND (
-                    title ILIKE $1
-                    OR description ILIKE $1
-                    OR file_name ILIKE $1
-                    OR mime_type ILIKE $1
-                    OR to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || coalesce(file_name, '') || ' ' || coalesce(mime_type, ''))
+                    f.title ILIKE $1
+                    OR f.description ILIKE $1
+                    OR f.file_name ILIKE $1
+                    OR f.mime_type ILIKE $1
+                    OR to_tsvector('simple', coalesce(f.title, '') || ' ' || coalesce(f.description, '') || ' ' || coalesce(f.file_name, '') || ' ' || coalesce(f.mime_type, ''))
                        @@ plainto_tsquery('simple', $2)
                   )
-                ORDER BY created_at DESC
+                ORDER BY f.created_at DESC
                 LIMIT $3
                 """,
                 f"%{keyword}%",
@@ -1995,7 +2763,18 @@ async def get_file(file_id: int) -> asyncpg.Record | None:
         return None
     assert db_pool
     async with db_pool.acquire() as conn:
-        return await conn.fetchrow("SELECT * FROM bot_files WHERE id = $1 AND is_active = TRUE", file_id)
+        return await conn.fetchrow(
+            """
+            SELECT
+              f.*,
+              s.name AS section_name
+            FROM bot_files AS f
+            LEFT JOIN bot_sections AS s ON s.id = f.section_id
+            WHERE f.id = $1
+              AND f.is_active = TRUE
+            """,
+            file_id,
+        )
 
 
 async def get_link(link_id: int) -> asyncpg.Record | None:
@@ -2066,6 +2845,323 @@ async def set_support_contact(contact: str, admin_id: Any) -> None:
             contact,
             safe_int(admin_id),
         )
+
+
+async def normalize_section_orders_conn(conn: asyncpg.Connection) -> None:
+    rows = await conn.fetch(
+        """
+        SELECT id
+        FROM bot_sections
+        WHERE is_active = TRUE
+        ORDER BY sort_order ASC, id ASC
+        """
+    )
+    for order, row in enumerate(rows, start=1):
+        await conn.execute(
+            """
+            UPDATE bot_sections
+            SET sort_order = $2,
+                updated_at = NOW()
+            WHERE id = $1
+            """,
+            row["id"],
+            order,
+        )
+
+    await conn.execute(
+        """
+        UPDATE bot_files AS f
+        SET section_no = s.sort_order
+        FROM bot_sections AS s
+        WHERE f.section_id = s.id
+        """
+    )
+
+
+async def list_sections(page: int, page_size: int) -> tuple[list[asyncpg.Record], int]:
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        sections = await conn.fetch(
+            """
+            SELECT
+              s.*,
+              COUNT(f.id)::BIGINT AS file_count
+            FROM bot_sections AS s
+            LEFT JOIN bot_files AS f
+              ON f.section_id = s.id
+             AND f.is_active = TRUE
+            WHERE s.is_active = TRUE
+            GROUP BY s.id
+            ORDER BY s.sort_order ASC, s.id ASC
+            LIMIT $1 OFFSET $2
+            """,
+            page_size,
+            page * page_size,
+        )
+        total = await conn.fetchval("SELECT COUNT(*) FROM bot_sections WHERE is_active = TRUE")
+    return list(sections), int(total or 0)
+
+
+async def list_all_sections() -> list[asyncpg.Record]:
+    sections, _ = await list_sections(0, 200)
+    return sections
+
+
+async def get_section(section_id: int | None) -> asyncpg.Record | None:
+    if not section_id or section_id <= 0:
+        return None
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            SELECT *
+            FROM bot_sections
+            WHERE id = $1
+              AND is_active = TRUE
+            """,
+            section_id,
+        )
+
+
+async def get_section_with_count(section_id: int) -> asyncpg.Record | None:
+    if section_id <= 0:
+        return None
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            SELECT
+              s.*,
+              COUNT(f.id)::BIGINT AS file_count
+            FROM bot_sections AS s
+            LEFT JOIN bot_files AS f
+              ON f.section_id = s.id
+             AND f.is_active = TRUE
+            WHERE s.id = $1
+              AND s.is_active = TRUE
+            GROUP BY s.id
+            """,
+            section_id,
+        )
+
+
+async def create_section(name: str, admin_id: Any) -> tuple[asyncpg.Record | None, str]:
+    cleaned = clean_section_name(name)
+    if not cleaned:
+        return None, "invalid"
+
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        duplicate = await conn.fetchval(
+            """
+            SELECT id
+            FROM bot_sections
+            WHERE is_active = TRUE
+              AND lower(name) = lower($1)
+            LIMIT 1
+            """,
+            cleaned,
+        )
+        if duplicate:
+            return None, "duplicate"
+
+        next_order = await conn.fetchval("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM bot_sections WHERE is_active = TRUE")
+        created = await conn.fetchrow(
+            """
+            INSERT INTO bot_sections (name, sort_order, created_by, updated_by)
+            VALUES ($1, $2, $3, $3)
+            RETURNING *
+            """,
+            cleaned,
+            int(next_order or 1),
+            safe_int(admin_id),
+        )
+    return created, "ok"
+
+
+async def rename_section(section_id: int, name: str, admin_id: Any) -> tuple[asyncpg.Record | None, str]:
+    if section_id <= 0:
+        return None, "invalid"
+    cleaned = clean_section_name(name)
+    if not cleaned:
+        return None, "invalid"
+
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        duplicate = await conn.fetchval(
+            """
+            SELECT id
+            FROM bot_sections
+            WHERE id <> $1
+              AND is_active = TRUE
+              AND lower(name) = lower($2)
+            LIMIT 1
+            """,
+            section_id,
+            cleaned,
+        )
+        if duplicate:
+            return None, "duplicate"
+
+        updated = await conn.fetchrow(
+            """
+            UPDATE bot_sections
+            SET name = $2,
+                updated_by = $3,
+                updated_at = NOW()
+            WHERE id = $1
+              AND is_active = TRUE
+            RETURNING *
+            """,
+            section_id,
+            cleaned,
+            safe_int(admin_id),
+        )
+    if not updated:
+        return None, "missing"
+    return updated, "ok"
+
+
+async def move_section_order(section_id: int, delta: int, admin_id: Any) -> bool:
+    if section_id <= 0 or delta == 0:
+        return False
+
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            current = await conn.fetchrow(
+                """
+                SELECT id, sort_order
+                FROM bot_sections
+                WHERE id = $1
+                  AND is_active = TRUE
+                """,
+                section_id,
+            )
+            if not current:
+                return False
+
+            if delta > 0:
+                neighbor = await conn.fetchrow(
+                    """
+                    SELECT id, sort_order
+                    FROM bot_sections
+                    WHERE is_active = TRUE
+                      AND (sort_order > $1 OR (sort_order = $1 AND id > $2))
+                    ORDER BY sort_order ASC, id ASC
+                    LIMIT 1
+                    """,
+                    current["sort_order"],
+                    current["id"],
+                )
+            else:
+                neighbor = await conn.fetchrow(
+                    """
+                    SELECT id, sort_order
+                    FROM bot_sections
+                    WHERE is_active = TRUE
+                      AND (sort_order < $1 OR (sort_order = $1 AND id < $2))
+                    ORDER BY sort_order DESC, id DESC
+                    LIMIT 1
+                    """,
+                    current["sort_order"],
+                    current["id"],
+                )
+            if not neighbor:
+                return False
+
+            await conn.execute(
+                """
+                UPDATE bot_sections
+                SET sort_order = $2,
+                    updated_by = $3,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                current["id"],
+                neighbor["sort_order"],
+                safe_int(admin_id),
+            )
+            await conn.execute(
+                """
+                UPDATE bot_sections
+                SET sort_order = $2,
+                    updated_by = $3,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                neighbor["id"],
+                current["sort_order"],
+                safe_int(admin_id),
+            )
+            await normalize_section_orders_conn(conn)
+    return True
+
+
+async def deactivate_section(section_id: int, admin_id: Any) -> tuple[bool, str]:
+    if section_id <= 0:
+        return False, "invalid"
+
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            section = await conn.fetchrow(
+                """
+                SELECT id
+                FROM bot_sections
+                WHERE id = $1
+                  AND is_active = TRUE
+                """,
+                section_id,
+            )
+            if not section:
+                return False, "missing"
+
+            active_total = await conn.fetchval("SELECT COUNT(*) FROM bot_sections WHERE is_active = TRUE")
+            if int(active_total or 0) <= 1:
+                return False, "last_section"
+
+            file_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM bot_files WHERE is_active = TRUE AND section_id = $1",
+                section_id,
+            )
+            if int(file_count or 0) > 0:
+                return False, "has_files"
+
+            await conn.execute(
+                """
+                UPDATE bot_sections
+                SET is_active = FALSE,
+                    updated_by = $2,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                section_id,
+                safe_int(admin_id),
+            )
+            await normalize_section_orders_conn(conn)
+
+    return True, "ok"
+
+
+async def resolve_upload_section(section_id: int, admin_id: Any) -> asyncpg.Record:
+    section = await get_section(section_id)
+    if section:
+        return section
+
+    sections = await list_all_sections()
+    if sections:
+        return sections[0]
+
+    created, _ = await create_section("General", admin_id)
+    if created:
+        return created
+
+    # Last fallback, should not happen but avoids crash on race conditions.
+    fallback = await get_section(1)
+    if fallback:
+        return fallback
+    raise RuntimeError("No active section available")
 
 
 def media_from_message(message: dict[str, Any]) -> dict[str, Any] | None:
@@ -2191,6 +3287,10 @@ def verify_password(password: str, salt: str, expected_hash: str) -> bool:
 
 def clean_title(value: str) -> str:
     return " ".join(str(value or "").strip().split())[:255]
+
+
+def clean_section_name(value: str) -> str:
+    return clean_title(value)
 
 
 def clean_file_name(value: str) -> str:
@@ -2421,6 +3521,14 @@ def parse_target_page(value: str) -> tuple[int, int]:
         return 0, 0
     target_raw, _, page_raw = text.partition("|")
     return safe_int(target_raw), max(0, safe_int(page_raw))
+
+
+def parse_upload_state_section_id(state: str | None) -> int:
+    text = str(state or "")
+    if not text.startswith("upload:"):
+        return 0
+    _, _, section_raw = text.partition(":")
+    return safe_int(section_raw)
 
 
 def e(value: Any) -> str:

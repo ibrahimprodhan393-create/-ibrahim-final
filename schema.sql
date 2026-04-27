@@ -1,3 +1,20 @@
+CREATE TABLE IF NOT EXISTS bot_sections (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 1,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by BIGINT,
+  updated_by BIGINT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS bot_sections_active_order_idx
+  ON bot_sections (is_active, sort_order, id);
+
+CREATE INDEX IF NOT EXISTS bot_sections_name_idx
+  ON bot_sections ((lower(name)));
+
 CREATE TABLE IF NOT EXISTS bot_files (
   id BIGSERIAL PRIMARY KEY,
   file_unique_id TEXT NOT NULL,
@@ -9,6 +26,7 @@ CREATE TABLE IF NOT EXISTS bot_files (
   title TEXT,
   description TEXT,
   section_no INTEGER NOT NULL DEFAULT 1,
+  section_id BIGINT,
   uploader_id BIGINT NOT NULL,
   uploader_name TEXT,
   download_count BIGINT NOT NULL DEFAULT 0,
@@ -24,6 +42,20 @@ ALTER TABLE bot_files
 ALTER TABLE bot_files
   ADD COLUMN IF NOT EXISTS section_no INTEGER NOT NULL DEFAULT 1;
 
+ALTER TABLE bot_files
+  ADD COLUMN IF NOT EXISTS section_id BIGINT;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'bot_files_section_id_fkey'
+  ) THEN
+    ALTER TABLE bot_files
+      ADD CONSTRAINT bot_files_section_id_fkey
+      FOREIGN KEY (section_id) REFERENCES bot_sections(id);
+  END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS bot_files_active_created_idx
   ON bot_files (is_active, created_at DESC);
 
@@ -31,6 +63,34 @@ CREATE INDEX IF NOT EXISTS bot_files_search_idx
   ON bot_files USING GIN (
     to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || coalesce(file_name, '') || ' ' || coalesce(mime_type, ''))
   );
+
+INSERT INTO bot_sections (name, sort_order, created_by, updated_by)
+SELECT 'General', 1, 0, 0
+WHERE NOT EXISTS (
+  SELECT 1 FROM bot_sections WHERE is_active = TRUE
+);
+
+UPDATE bot_files AS f
+SET section_id = s.id
+FROM bot_sections AS s
+WHERE f.section_id IS NULL
+  AND s.is_active = TRUE
+  AND s.sort_order = GREATEST(1, COALESCE(f.section_no, 1));
+
+UPDATE bot_files AS f
+SET section_id = (
+  SELECT id
+  FROM bot_sections
+  WHERE is_active = TRUE
+  ORDER BY sort_order ASC, id ASC
+  LIMIT 1
+)
+WHERE f.section_id IS NULL;
+
+UPDATE bot_files AS f
+SET section_no = s.sort_order
+FROM bot_sections AS s
+WHERE f.section_id = s.id;
 
 CREATE TABLE IF NOT EXISTS bot_links (
   id BIGSERIAL PRIMARY KEY,

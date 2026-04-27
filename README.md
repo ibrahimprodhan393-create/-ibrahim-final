@@ -27,7 +27,9 @@ Official Telegram Bot API docs: https://core.telegram.org/bots/api
 - Admin-only browser download link add/remove
 - File and link description support during upload/add
 - Admin can edit existing direct-file description later
-- Admin can edit file name and section +/- from file details
+- Admin can create unlimited custom sections from Admin Panel
+- Admin can upload direct files into a selected section
+- Admin can change a file section from file details
 - Admin can edit existing browser link title/URL/description later
 - User direct Telegram file download
 - User browser download link buttons
@@ -170,14 +172,29 @@ SKIP_WEBHOOK_SETUP=true uvicorn main:app --host 0.0.0.0 --port 3000
 1. Open the bot.
 2. Press `🛠 Admin Panel`.
 3. Press `📤 Upload Direct File`.
-4. Send a document, video, audio, or photo with optional caption:
+4. Select a section.
+5. Send a document, video, audio, or photo with optional caption:
 
 ```text
 Title
 Title | Description
 ```
 
-5. The bot saves the metadata in Neon.
+6. The bot saves the metadata in Neon with that section.
+
+To manage sections from admin panel:
+
+1. Press `🛠 Admin Panel`.
+2. Press `🗂 Manage Sections`.
+3. From there you can:
+
+```text
+➕ Add Section
+✏️ Rename
+⬆️ Move Up / ⬇️ Move Down
+🗑 Remove Section (only when empty)
+📤 Upload Here
+```
 
 To add a browser download link:
 
@@ -222,7 +239,7 @@ Description only
 clear
 ```
 
-To edit file name or section from file details:
+To edit file name/details or change file section:
 
 1. Press `📥 Direct Files`.
 2. Open a file.
@@ -230,8 +247,7 @@ To edit file name or section from file details:
 
 ```text
 📝 Edit File Name
-➖ Section
-➕ Section
+🗂 Change Section
 🗑 Remove Direct File
 ```
 
@@ -340,9 +356,10 @@ Admin panel:
 ```text
 🛠 Admin Panel
 
-📤 Upload Direct File adds Telegram files.
+📤 Upload Direct File picks a section then saves Telegram files.
+🗂 Manage Sections lets admin create/rename/move/remove sections.
 🌐 Add Browser Link adds external download links.
-✏️ Open any file and press Edit File Name, Section +/- or Edit Details.
+✏️ Open any file and press Edit File Name, Change Section, or Edit Details.
 ✏️ Open any browser link and press Edit Link to update title/URL/description.
 🔑 Create User Password adds a login password.
 🔍 Password List shows created password previews.
@@ -352,11 +369,11 @@ Admin panel:
 🌐 Browser Links shows external links.
 🛠 Set Support ID updates the support contact.
 
-[ 📤 Upload Direct File ] [ 🌐 Add Browser Link ]
+[ 📤 Upload Direct File ] [ 🗂 Manage Sections ]
 [ 📥 Direct Files ] [ 🌐 Browser Links ]
+[ 🌐 Add Browser Link ] [ 👥 Bot Users ]
 [ 🔑 Create User Password ] [ 🔍 Password List ]
-[ 🗑 Remove User Password ] [ 👥 Bot Users ]
-[ 🛠 Set Support ID ]
+[ 🗑 Remove User Password ] [ 🛠 Set Support ID ]
 [ 🏠 Main Menu ]
 ```
 
@@ -385,7 +402,7 @@ Uploaded: 2026-04-27
 
 [ 📥 Direct Download ]
 [ 📝 Edit File Name ] [ ✏️ Edit Details ]
-[ ➖ Section ] [ ➕ Section ]
+[ 🗂 Change Section ]
 [ 🗑 Remove Direct File ]
 [ 📥 Direct Files ] [ 🏠 Main Menu ]
 ```
