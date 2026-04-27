@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS bot_links (
   description TEXT,
   uploader_id BIGINT NOT NULL,
   uploader_name TEXT,
+  download_count BIGINT NOT NULL DEFAULT 0,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -106,6 +107,9 @@ CREATE TABLE IF NOT EXISTS bot_links (
 
 ALTER TABLE bot_links
   ADD COLUMN IF NOT EXISTS description TEXT;
+
+ALTER TABLE bot_links
+  ADD COLUMN IF NOT EXISTS download_count BIGINT NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS bot_links_active_created_idx
   ON bot_links (is_active, created_at DESC);
@@ -167,3 +171,29 @@ ALTER TABLE bot_user_passwords
 
 CREATE INDEX IF NOT EXISTS bot_user_passwords_active_idx
   ON bot_user_passwords (is_active, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS bot_user_file_downloads (
+  telegram_id BIGINT NOT NULL,
+  file_id BIGINT NOT NULL,
+  download_count BIGINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_download_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (telegram_id, file_id),
+  FOREIGN KEY (telegram_id) REFERENCES bot_users(telegram_id) ON DELETE CASCADE,
+  FOREIGN KEY (file_id) REFERENCES bot_files(id) ON DELETE CASCADE
+);
+
+ALTER TABLE bot_user_file_downloads
+  ADD COLUMN IF NOT EXISTS download_count BIGINT NOT NULL DEFAULT 0;
+
+ALTER TABLE bot_user_file_downloads
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE bot_user_file_downloads
+  ADD COLUMN IF NOT EXISTS last_download_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE INDEX IF NOT EXISTS bot_user_file_downloads_telegram_idx
+  ON bot_user_file_downloads (telegram_id, last_download_at DESC);
+
+CREATE INDEX IF NOT EXISTS bot_user_file_downloads_file_idx
+  ON bot_user_file_downloads (file_id);
