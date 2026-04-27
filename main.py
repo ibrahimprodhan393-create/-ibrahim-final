@@ -226,6 +226,10 @@ async def handle_message(message: dict[str, Any]) -> None:
         await handle_edit_file_name(chat_id, user, text, state)
         return
 
+    if state and state.startswith("editlname:"):
+        await handle_edit_link_name(chat_id, user, text, state)
+        return
+
     if state and state.startswith("editlink:"):
         await handle_edit_link_details(chat_id, user, text, state)
         return
@@ -354,6 +358,38 @@ async def handle_media_upload(message: dict[str, Any], media: dict[str, Any]) ->
         "\n".join(lines),
         reply_markup=file_saved_keyboard(saved["id"]),
     )
+    await notify_users_about_file_upload(saved, user.get("id"))
+
+
+async def notify_users_about_file_upload(file: asyncpg.Record, uploader_id: Any) -> None:
+    try:
+        recipients = await list_file_notification_recipients(safe_int(uploader_id))
+    except Exception as exc:
+        print(f"File upload notification list failed: {exc}")
+        return
+    if not recipients:
+        return
+
+    section_label = file.get("section_name") or f"Section {file.get('section_no') or 1}"
+    title = file.get("title") or file.get("file_name") or "New File"
+    lines = [
+        "<b>📢 New File Uploaded</b>",
+        "",
+        f"📥 <b>{e(title)}</b>",
+        f"🗂 Section: {e(section_label)}",
+        f"📦 Size: {e(format_bytes(file.get('file_size')))}",
+    ]
+    if file.get("description"):
+        lines.append(f"📝 Description: {e(file['description'])}")
+
+    text = "\n".join(lines)
+    reply_markup = file_notification_keyboard(safe_int(file.get("id")))
+    for recipient_id in recipients:
+        try:
+            await send_message(recipient_id, text, reply_markup=reply_markup)
+        except Exception as exc:
+            print(f"File upload notification skipped for {recipient_id}: {exc}")
+        await asyncio.sleep(0.05)
 
 
 async def handle_callback(query: dict[str, Any]) -> None:
@@ -381,6 +417,7 @@ async def handle_callback(query: dict[str, Any]) -> None:
         "login",
         "editfile",
         "editfname",
+        "editlname",
         "editlink",
         "addsec",
         "secrename",
@@ -475,6 +512,31 @@ async def handle_callback(query: dict[str, Any]) -> None:
                     "https://example.com/file.zip | Description",
                     "Description only",
                     "clear  (clear description)",
+                ]
+            ),
+            back_keyboard("menu"),
+        )
+    elif action == "editlname":
+        if not is_admin(user.get("id")):
+            await answer_callback(query["id"], "Admins only.", True)
+            return
+        link_id = safe_int(raw_value)
+        link = await get_link(link_id)
+        if not link:
+            await answer_callback(query["id"], "Link not found.", True)
+            await show_link_list(chat_id, message_id, 0, user)
+            return
+        user_states[user["id"]] = f"editlname:{link_id}"
+        await answer_callback(query["id"])
+        await edit_message(
+            chat_id,
+            message_id,
+            "\n".join(
+                [
+                    "Send new browser link name.",
+                    "",
+                    f"Current link name: <b>{e(link['title'])}</b>",
+                    "Example: Movie Download Link",
                 ]
             ),
             back_keyboard("menu"),
@@ -1631,6 +1693,39 @@ async def handle_edit_file_name(chat_id: int, user: dict[str, Any], text: str, s
     )
 
 
+async def handle_edit_link_name(chat_id: int, user: dict[str, Any], text: str, state: str) -> None:
+    if not is_admin(user.get("id")):
+        user_states.pop(user.get("id"), None)
+        await send_message(chat_id, "Admins only.", reply_markup=main_menu_keyboard(False, False))
+        return
+
+    _, _, link_id_raw = state.partition(":")
+    link_id = safe_int(link_id_raw)
+    if link_id <= 0:
+        user_states.pop(user.get("id"), None)
+        await send_message(chat_id, "Invalid edit session. Please open the link again.", reply_markup=admin_panel_keyboard())
+        return
+
+    new_title = clean_title(text)
+    if not new_title:
+        await send_message(chat_id, "Please send a valid browser link name.", reply_markup=cancel_keyboard())
+        return
+
+    updated = await update_link_title(link_id, new_title)
+    user_states.pop(user.get("id"), None)
+    if not updated:
+        await send_message(chat_id, "Browser download link not found.", reply_markup=admin_panel_keyboard())
+        return
+
+    lines = [
+        "✅ Browser link name updated.",
+        "",
+        f"🌐 Link Name: <b>{e(updated['title'])}</b>",
+        f"🗂 Section: {e(updated.get('section_name') or 'General')}",
+    ]
+    await send_message(chat_id, "\n".join(lines), reply_markup=link_detail_keyboard(updated, True))
+
+
 async def handle_edit_link_details(chat_id: int, user: dict[str, Any], text: str, state: str) -> None:
     if not is_admin(user.get("id")):
         user_states.pop(user.get("id"), None)
@@ -2060,6 +2155,15 @@ def file_saved_keyboard(file_id: int) -> dict[str, Any]:
     return {"inline_keyboard": [[{"text": "📥 View Direct File", "callback_data": f"file:{file_id}"}], [{"text": "🛠 Admin Panel", "callback_data": "admin"}]]}
 
 
+def file_notification_keyboard(file_id: int) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "📥 Direct Download", "callback_data": f"get:{file_id}"}],
+            [{"text": "📄 File Details", "callback_data": f"file:{file_id}"}, {"text": "🏠 Main Menu", "callback_data": "menu"}],
+        ]
+    }
+
+
 def link_saved_keyboard(link_id: int) -> dict[str, Any]:
     return {"inline_keyboard": [[{"text": "🌐 View Browser Link", "callback_data": f"link:{link_id}"}], [{"text": "🛠 Admin Panel", "callback_data": "admin"}]]}
 
@@ -2240,7 +2344,13 @@ def link_detail_keyboard(link: asyncpg.Record, admin: bool) -> dict[str, Any]:
         [{"text": "🏠 Main Menu", "callback_data": "menu"}],
     ]
     if admin:
-        rows.insert(1, [{"text": "✏️ Edit Link", "callback_data": f"editlink:{link['id']}"}])
+        rows.insert(
+            1,
+            [
+                {"text": "📝 Edit Link Name", "callback_data": f"editlname:{link['id']}"},
+                {"text": "✏️ Edit Details", "callback_data": f"editlink:{link['id']}"},
+            ],
+        )
         rows.insert(2, [{"text": "🗂 Change Section", "callback_data": f"lsec:{link['id']}"}])
         rows.insert(3, [{"text": "🗑 Remove Browser Link", "callback_data": f"dellink:{link['id']}"}])
     return {"inline_keyboard": rows}
@@ -3009,6 +3119,26 @@ async def update_link_details(link_id: int, title: str, url: str, description: s
         )
 
 
+async def update_link_title(link_id: int, title: str) -> asyncpg.Record | None:
+    if link_id <= 0:
+        return None
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            UPDATE bot_links
+            SET title = $2,
+                updated_at = NOW()
+            WHERE id = $1
+              AND is_active = TRUE
+            RETURNING *,
+              (SELECT name FROM bot_sections WHERE id = bot_links.section_id) AS section_name
+            """,
+            link_id,
+            title,
+        )
+
+
 async def update_link_section_id(link_id: int, section_id: int) -> asyncpg.Record | None:
     if link_id <= 0 or section_id <= 0:
         return None
@@ -3182,6 +3312,24 @@ async def list_bot_users(page: int, page_size: int) -> tuple[list[asyncpg.Record
         )
         total = await conn.fetchval("SELECT COUNT(*) FROM bot_users")
     return list(rows), int(total or 0)
+
+
+async def list_file_notification_recipients(exclude_user_id: int) -> list[int]:
+    admin_ids = [safe_int(item) for item in ADMIN_IDS if safe_int(item) > 0]
+    assert db_pool
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT telegram_id
+            FROM bot_users
+            WHERE telegram_id <> $1
+              AND NOT (telegram_id = ANY($2::BIGINT[]))
+            ORDER BY last_seen_at DESC
+            """,
+            exclude_user_id,
+            admin_ids,
+        )
+    return [safe_int(row["telegram_id"]) for row in rows if safe_int(row["telegram_id"]) > 0]
 
 
 async def get_user_download_summary(user_id: int) -> tuple[int, int]:
